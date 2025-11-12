@@ -1,0 +1,91 @@
+- name: Build golden runtime image (RHEL 9)
+
+  hosts: targets
+
+  become: true
+
+  gather_facts: true
+
+  vars_files:
+
+    - ../vars/rhel9.yml
+
+ 
+
+  pre_tasks:
+
+    - name: Assert RedHat family and RHEL 9
+      assert:
+        that:
+          - ansible_os_family == "RedHat"
+          - ansible_distribution_major_version | string == "9"
+        fail_msg: "This playbook must run on RHEL 9 only"
+
+     
+    - name: Display OS information
+      debug:
+        msg: 
+          - "Deploying to: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Target host: {{ inventory_hostname }}"
+          - "Python interpreter: {{ ansible_python.executable }}"
+          - "Java version to install: {{ java_version }}"
+
+    - name: Preflight | network reachability
+      block:
+        - command: curl -I https://rpm.nodesource.com/
+          register: curl_nodesource
+          changed_when: false
+          retries: 3
+          delay: 5
+          until: curl_nodesource.rc == 0
+      rescue:
+        - fail:
+            msg: "Preflight failed: Nodesource unreachable from {{ inventory_hostname }}"
+
+ 
+
+  roles:
+
+    - role: install-python
+      tags: [python]
+
+    - role: install-java-sdk
+      tags: [java]
+
+    - role: install-nodejs
+      tags: [node]
+
+    - role: install-database-cient
+      tags: [db]
+
+ 
+
+  post_tasks:
+
+    - name: Postflight | record versions (structured)
+      shell: |
+        set -e
+        javaV="$(java -version 2>&1 | head -n1 | awk -F '\"' '/version/ {print $2}' || echo unknown)"
+        javacV="$(javac -version 2>&1 | awk '{print $2}' || echo unknown)"
+        nodeV="$(node --version 2>/dev/null || echo unknown)"
+        npmV="$(npm --version 2>/dev/null || echo unknown)"
+        pythonV="$(python3 --version 2>/dev/null | awk '{print $2}' || echo unknown)"
+        psqlV="$(psql --version 2>/dev/null || echo unknown)"
+        printf '{"host":"%s","java":"%s","javac":"%s","node":"%s","npm":"%s","python":"%s","db_runtime":"%s","psql":"%s"}\n' \
+          "{{ inventory_hostname }}" "$javaV" "$javacV" "$nodeV" "$npmV" "$pythonV" "{{ db_runtime }}" "$psqlV"
+      register: summary_json
+      changed_when: false
+
+    - name: Display installation summary
+      debug:
+        msg: 
+          - "=== RHEL 9 Golden Image Deployment Complete ==="
+          - "{{ summary_json.stdout }}"
+
+    - name: Save summary.json
+      copy:
+        dest: "artifacts/summary/{{ inventory_hostname }}.json"
+        content: "{{ summary_json.stdout }}"
+      delegate_to: localhost
+      run_once: true
+      ignore_errors: true

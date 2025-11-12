@@ -1,0 +1,51 @@
+# Install Python with error handling and validation
+
+- name: Determine OS Major version
+  set_fact:
+    _elmaj: "{{ ansible_distribution_major_version | string }}"
+
+- block:
+    - name: Install Python packages (EL7)
+      when: _elmaj == "7"
+      yum:
+        name:
+          - python3
+          - python3-devel
+          - python3-pip
+          - python3-setuptools
+        state: present
+
+    - name: Install Python packages (EL8/9)
+      when: _elmaj in ["8","9"]
+      dnf:
+        name:
+          - python3
+          - python3-devel
+          - python3-pip
+          - python3-setuptools
+        state: present
+
+    - name: Validate Python installation
+      command: python3 --version
+      register: python_ver
+      changed_when: false
+      failed_when: python_ver.rc != 0 or (python_ver.stdout is not search('^Python 3'))
+
+  rescue:
+    - name: Diagnostics for Python install failure
+      shell: |
+        set -o pipefail
+        echo "=== Package repos ==="
+        if command -v dnf >/dev/null 2>&1; then dnf repolist -v || true; else yum repolist -v || true; fi
+        echo "=== Python Check ==="
+        which python3 || true; python3 --version || true
+        which pip3 || true; pip3 --version || true
+      register: diag_python
+      changed_when: false
+
+    - fail:
+        msg: |
+          Python install failed on {{ inventory_hostname }}.
+
+          Diagnostics:
+          {{ diag_python.stdout | default('n/a') }}

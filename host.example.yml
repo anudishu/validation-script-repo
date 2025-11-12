@@ -1,0 +1,15 @@
+# Shell script will dirctly generates this file by quering
+# gcloud compute ssh --tunnel-through-iap --dry-run to obtain the proper ProxyJump configuration for the given VM
+ 
+all:
+  children:
+    targets:
+      hosts:
+        build-vm:
+          ansible_host: build-vm
+          ansible_user: <Service Account>
+          # ansile user is injected dynamically when using os login
+          ansible_ssh_common_args: >-
+            -o StrictHostKeyChecking=no
+            -o UserKnownHostsFile=/dev/null
+ 

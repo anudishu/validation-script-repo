@@ -1,0 +1,22 @@
+# Install PostgreSQL client with error handling (using system packages)
+
+- name: Install PostgreSQL client (System packages)
+  when: db_runtime == "postgres"
+  package:
+    name:
+      - postgresql
+      - postgresql-contrib
+    state: present
+  tags: [db,postgres]
+
+- name: Validate PostgreSQL client installation
+  when: db_runtime == "postgres"
+  command: psql --version
+  register: psql_ver
+  changed_when: false
+  failed_when: psql_ver.rc != 0
+
+- name: Display PostgreSQL client version
+  when: db_runtime == "postgres"
+  debug:
+    msg: "PostgreSQL client installed: {{ psql_ver.stdout }}"

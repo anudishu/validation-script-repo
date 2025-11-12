@@ -1,0 +1,35 @@
+---
+# Inventory for RHEL 9 test machine on GCP
+all:
+  hosts:
+    rhel9-ansible-test:
+      ansible_host: 34.72.87.192
+      ansible_user: askcloudedge_gmail_com
+      ansible_ssh_private_key_file: ~/.ssh/google_compute_engine
+      ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+      
+  children:
+    # Group assignments for role targeting
+    targets:
+      hosts:
+        rhel9-ansible-test:
+    
+    web_servers:
+      hosts:
+        rhel9-ansible-test:
+    
+    app_servers:
+      hosts:
+        rhel9-ansible-test:
+    
+    db_servers:
+      hosts:
+        rhel9-ansible-test:
+
+  vars:
+    # Environment and OS variables
+    env_name: test
+    ansible_python_interpreter: auto_silent
+    
+    # Load RHEL 9 specific variables
+    ansible_distribution_major_version: "9"

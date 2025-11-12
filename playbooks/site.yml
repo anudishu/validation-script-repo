@@ -1,0 +1,89 @@
+---
+# Main site playbook - orchestrates all server configurations
+- name: Configure Web Servers
+  hosts: web_servers
+  become: yes
+  gather_facts: yes
+  
+  vars_files:
+    - ../vars/common.yml
+    - ../vars/{{ environment | default('dev') }}.yml
+  
+  pre_tasks:
+    - name: Update package cache
+      package:
+        update_cache: yes
+      tags: always
+  
+  roles:
+    - { role: common, tags: common }
+    # - { role: nginx, tags: web }
+    # - { role: ssl, tags: ssl }
+  
+  post_tasks:
+    - name: Verify web server is running
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}:{{ http_port | default(80) }}"
+        method: GET
+        status_code: 200
+      ignore_errors: yes
+      tags: verify
+
+- name: Configure Application Servers
+  hosts: app_servers
+  become: yes
+  gather_facts: yes
+  
+  vars_files:
+    - ../vars/common.yml
+    - ../vars/{{ environment | default('dev') }}.yml
+  
+  pre_tasks:
+    - name: Update package cache
+      package:
+        update_cache: yes
+      tags: always
+  
+  roles:
+    - { role: common, tags: common }
+    - { role: install-java-sdk, tags: java }
+    # - { role: application, tags: app }
+    # - { role: monitoring, tags: monitoring }
+  
+  post_tasks:
+    - name: Verify application is running
+      wait_for:
+        port: "{{ app_port | default(8080) }}"
+        host: "{{ ansible_default_ipv4.address }}"
+        timeout: 30
+      ignore_errors: yes
+      tags: verify
+
+- name: Configure Database Servers
+  hosts: database_servers
+  become: yes
+  gather_facts: yes
+  
+  vars_files:
+    - ../vars/common.yml
+    - ../vars/{{ environment | default('dev') }}.yml
+  
+  pre_tasks:
+    - name: Update package cache
+      package:
+        update_cache: yes
+      tags: always
+  
+  roles:
+    - { role: common, tags: common }
+    # - { role: mysql, tags: database }
+    # - { role: backup, tags: backup }
+  
+  post_tasks:
+    - name: Verify database is running
+      wait_for:
+        port: "{{ db_port | default(3306) }}"
+        host: "{{ ansible_default_ipv4.address }}"
+        timeout: 30
+      ignore_errors: yes
+      tags: verify

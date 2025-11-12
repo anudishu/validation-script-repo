@@ -1,0 +1,95 @@
+# Install Node.js with error handling and validation
+
+ 
+
+- name: Determine repo RPM per OS postgres_version
+
+  set_fact:
+
+    nodesource_repo_rpm: >-
+
+      https://rpm.nodesource.com/pub_{{ node_major }}.x/el/{{ ansible_distribution_major_version }}/x86_64/nodesource-release-el{{ ansible_distribution_major_version }}-1.noarch.rpm
+
+ 
+
+- block:
+
+    - name: Add Nodesource repo (EL7)
+
+      when: ansible_distribution_major_version == "7"
+
+      yum:
+
+        name: "{{ nodesource_repo_rpm }}"
+
+        state: present
+
+ 
+
+    - name: Add Nodesource repo (EL8/9)
+
+      when: ansible_distribution_major_version in ["8","9"]
+
+      dnf:
+
+        name: "{{ nodesource_repo_rpm }}"
+
+        state: present
+
+        disable_gpg_check: true
+
+ 
+
+    - name: Install Node.js
+
+      package:
+
+        name: nodejs
+
+        state: present
+
+ 
+
+    - name: Validate Node.js postgres_version
+
+      command: node --version
+
+      register: node_ver
+
+      changed_when: false
+
+      failed_when: node_ver.rc !=0 or (node_ver.stdout is not search('^v{{ node_major }}'))
+
+ 
+
+  rescue:
+
+    - name: Diagnostics for Node.js install failure
+
+      shell: |
+
+        set -o pipefail
+
+        echo "=== Package repos ==="
+
+        if command -v dnf >/dev/null 2>&1; then dnf repolist -v || true; else yum repolist -v || true; fi
+
+        echo "=== Node Check ==="
+
+        which node || true; node --version || true
+
+      register: diag_node
+
+      changed_when: false
+
+   
+
+    - fail:
+
+        msg: |
+
+          Node.js install failed on {{ inventory_hostname }}.
+
+          Diagnostics:
+
+          {{ diag_node.stdout | default('n/a') }}

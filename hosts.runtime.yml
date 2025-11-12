@@ -1,0 +1,18 @@
+all:
+  children:
+    targets:
+      hosts:
+        ansible-rhel9-vm:
+          ansible_host: ansible-rhel9-vm
+          ansible_user: askcloudedge_gmail_com
+          ansible_ssh_common_args: >-
+            -o ProxyCommand="gcloud compute start-iap-tunnel ansible-rhel9-vm 22 
+            --listen-on-stdin --project=probable-cove-474504-p0 --zone=us-central1-a 
+            --verbosity=warning" 
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+          ansible_ssh_private_key_file: '/Users/Sumit_Kumar/.ssh/ansible_test_key'
+          ansible_python_interpreter: auto_silent
+      vars:
+        # IAP-based connection for secure access
+        gcp_project: "probable-cove-474504-p0"
+        gcp_zone: "us-central1-a"

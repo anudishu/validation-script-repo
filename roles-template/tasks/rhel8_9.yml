@@ -1,0 +1,50 @@
+- block:
+
+    - name: Install {{ pkg_name }}
+
+      dnf:
+
+        name: "{{ pkg_name }}"
+
+        state: present
+
+ 
+
+    - name: Validate {{ pkg_name }} installation
+
+      command: "{{ pkg_validate_cmd }}"
+
+      register: validate_out
+
+      changed_when: false
+
+      failed_when: validate_out.rc !=0
+
+ 
+
+  rescue:
+
+    - name: Diagnostics for {{ pkg_name }} failure (EL8/9)
+
+      shell: |
+
+        dnf repolist -v || true
+
+        which {{ pkg_name.split()[0] | quote }} || true
+
+      register: diag
+
+      changed_when: false
+
+ 
+
+    - fail:
+
+        msg: |
+
+          Installtion failed for {{ pkg_name }} on EL8/9
+
+          Diagnostics:
+
+          {{ diag.stdout | default('n/a') }}
+

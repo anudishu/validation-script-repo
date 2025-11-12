@@ -1,0 +1,97 @@
+# Install Java SDK with error handling and validation
+
+- name: Determine Java package name per OS version and Java version
+  set_fact:
+    java_package_name: >-
+      {%- if java_version == "8" -%}
+        java-1.8.0-openjdk-devel
+      {%- elif java_version == "11" -%}
+        java-11-openjdk-devel
+      {%- elif java_version == "17" -%}
+        java-17-openjdk-devel
+      {%- elif java_version == "21" -%}
+        java-21-openjdk-devel
+      {%- else -%}
+        java-11-openjdk-devel
+      {%- endif -%}
+
+- name: Determine Java runtime package
+  set_fact:
+    java_runtime_package: >-
+      {%- if java_version == "8" -%}
+        java-1.8.0-openjdk
+      {%- elif java_version == "11" -%}
+        java-11-openjdk
+      {%- elif java_version == "17" -%}
+        java-17-openjdk
+      {%- elif java_version == "21" -%}
+        java-21-openjdk
+      {%- else -%}
+        java-11-openjdk
+      {%- endif -%}
+
+- block:
+    - name: Install Java SDK (EL7)
+      when: ansible_distribution_major_version == "7"
+      yum:
+        name: 
+          - "{{ java_runtime_package }}"
+          - "{{ java_package_name }}"
+        state: present
+
+    - name: Install Java SDK (EL8/9)
+      when: ansible_distribution_major_version in ["8","9"]
+      dnf:
+        name:
+          - "{{ java_runtime_package }}"
+          - "{{ java_package_name }}"
+        state: present
+
+    - name: Set JAVA_HOME environment variable
+      lineinfile:
+        path: /etc/environment
+        regexp: '^JAVA_HOME='
+        line: 'JAVA_HOME={{ java_home_path }}'
+        create: yes
+      when: set_java_home | default(true)
+
+    - name: Validate Java installation
+      command: java -version
+      register: java_ver
+      changed_when: false
+      failed_when: java_ver.rc != 0
+
+    - name: Validate javac (compiler) installation
+      command: javac -version
+      register: javac_ver
+      changed_when: false
+      failed_when: javac_ver.rc != 0
+
+    - name: Display Java version information
+      debug:
+        msg: |
+          Java Runtime: {{ java_ver.stderr.split('\n')[0] }}
+          Java Compiler: {{ javac_ver.stderr.split('\n')[0] }}
+
+  rescue:
+    - name: Diagnostics for Java SDK install failure
+      shell: |
+        set -o pipefail
+        echo "=== Package repos ==="
+        if command -v dnf >/dev/null 2>&1; then dnf repolist -v || true; else yum repolist -v || true; fi
+        echo "=== Java Check ==="
+        which java || true; java -version || true
+        which javac || true; javac -version || true
+        echo "=== JAVA_HOME ==="
+        echo $JAVA_HOME || true
+        ls -la {{ java_home_path }} 2>/dev/null || true
+      register: diag_java
+      changed_when: false
+   
+    - fail:
+        msg: |
+          Java SDK install failed on {{ inventory_hostname }}.
+          Attempted to install: {{ java_package_name }} and {{ java_runtime_package }}
+          Diagnostics:
+          {{ diag_java.stdout | default('n/a') }}
+
