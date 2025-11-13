@@ -1,0 +1,224 @@
+# =========================================================================
+# GOOGLE CLOUD WORKFLOW - TRIGGER CLOUD BUILD FOR ANSIBLE DEPLOYMENT
+# =========================================================================
+# 
+# This workflow triggers Cloud Build to deploy Ansible playbooks via IAP
+# Code is pulled from GitHub repository automatically
+# 
+# Usage:
+# gcloud workflows run ansible-cloudbuild-workflow \
+#   --data='{"playbook":"golden-image-rhel9.yml","target_vm":"ansible-rhel9-vm"}'
+# =========================================================================
+
+main:
+  params: [input]
+  steps:
+    - init:
+        assign:
+          # Extract parameters from input or use defaults
+          - project_id: ${default(map.get(input, "project_id"), "probable-cove-474504-p0")}
+          - target_vm: ${default(map.get(input, "target_vm"), "ansible-rhel9-vm")}
+          - vm_zone: ${default(map.get(input, "vm_zone"), "us-central1-a")}
+          - playbook: ${default(map.get(input, "playbook"), "golden-image-rhel9.yml")}
+          - git_repo: ${default(map.get(input, "git_repo"), "https://github.com/anudishu/anisble-workflow-iap.git")}
+          - git_branch: ${default(map.get(input, "git_branch"), "master")}
+
+    - log_start:
+        call: sys.log
+        args:
+          text: '${"Starting Cloud Build deployment for " + target_vm + " with playbook " + playbook}'
+          severity: "INFO"
+
+    - trigger_cloud_build:
+        call: googleapis.cloudbuild.v1.projects.builds.create
+        args:
+          projectId: ${project_id}
+          parent: ${"projects/" + project_id + "/locations/global"}
+          body:
+            # Pull code from GitHub
+            source:
+              gitSource:
+                url: ${git_repo}
+                revision: ${git_branch}
+            
+            # Run as service account
+            serviceAccount: "projects/probable-cove-474504-p0/serviceAccounts/ansible-automation@probable-cove-474504-p0.iam.gserviceaccount.com"
+            
+            # Required logging configuration
+            options:
+              logging: "CLOUD_LOGGING_ONLY"
+              dynamic_substitutions: true
+            
+            # Build steps
+            steps:
+              # Step 1: Verify target VM
+              - name: "gcr.io/cloud-builders/gcloud"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    echo "=== Verifying Target VM ==="
+                    VM_STATUS=$$(gcloud compute instances describe ${_TARGET_VM} \
+                      --zone=${_VM_ZONE} \
+                      --project=${_PROJECT_ID} \
+                      --format="value(status)" 2>&1)
+                    
+                    if [ "$$VM_STATUS" != "RUNNING" ]; then
+                      echo "ERROR: VM ${_TARGET_VM} is not running. Status: $$VM_STATUS"
+                      exit 1
+                    fi
+                    echo "SUCCESS: VM ${_TARGET_VM} is running"
+
+              # Step 2: Run Ansible deployment
+              - name: "gcr.io/cloud-builders/gcloud"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    set -e
+                    
+                    echo "=== Setting up Ansible Environment ==="
+                    apt-get update -qq && apt-get install -y -qq python3-pip > /dev/null 2>&1
+                    python3 -m pip install --quiet ansible google-auth google-cloud-compute
+                    ansible --version
+                    echo ""
+                    
+                    echo "=== Retrieving SSH Key from Secret Manager ==="
+                    mkdir -p /root/.ssh
+                    gcloud secrets versions access latest --secret="ansible-ssh-private-key" > /root/.ssh/ansible_key
+                    chmod 600 /root/.ssh/ansible_key
+                    echo "SSH key retrieved"
+                    echo ""
+                    
+                    echo "=== Creating IAP Hosts File ==="
+                    cat > hosts-cloudbuild.yml << 'EOFHOSTS'
+                    all:
+                      children:
+                        targets:
+                          hosts:
+                            ${_TARGET_VM}:
+                              ansible_host: ${_TARGET_VM}
+                              ansible_user: askcloudedge_gmail_com
+                              ansible_ssh_common_args: >-
+                                -o ProxyCommand="gcloud compute start-iap-tunnel ${_TARGET_VM} 22 
+                                --listen-on-stdin --project=${_PROJECT_ID} --zone=${_VM_ZONE}
+                                --verbosity=warning" 
+                                -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+                                -o IdentitiesOnly=yes
+                                -o ConnectTimeout=30 -o ServerAliveInterval=30
+                              ansible_ssh_private_key_file: /root/.ssh/ansible_key
+                              ansible_python_interpreter: auto_silent
+                    EOFHOSTS
+                    
+                    echo "Created hosts file"
+                    echo ""
+                    
+                    echo "=== Testing IAP Connectivity ==="
+                    timeout 120 ansible all -i hosts-cloudbuild.yml -m ping || {
+                      echo "ERROR: Failed to connect to ${_TARGET_VM} via IAP"
+                      exit 1
+                    }
+                    echo "SUCCESS: IAP connectivity verified"
+                    echo ""
+                    
+                    echo "=== Executing Ansible Playbook: ${_PLAYBOOK} ==="
+                    ansible-playbook -i hosts-cloudbuild.yml \
+                      playbooks/${_PLAYBOOK} \
+                      -v \
+                      --timeout=60 | tee deployment.log
+                    
+                    if [ $${PIPESTATUS[0]} -ne 0 ]; then
+                      echo "ERROR: Playbook execution failed"
+                      tail -50 deployment.log
+                      exit 1
+                    fi
+                    echo "SUCCESS: Playbook ${_PLAYBOOK} completed"
+                    echo ""
+                    
+                    echo "=== Running Validation ==="
+                    ansible all -i hosts-cloudbuild.yml -m copy \
+                      -a "src=validation/ dest=/tmp/ mode='preserve'" || {
+                      echo "WARNING: Failed to copy validation scripts"
+                      exit 0
+                    }
+                    
+                    ansible all -i hosts-cloudbuild.yml -m shell \
+                      -a "/tmp/validate_all.sh --verbose" \
+                      --become | tee validation.log || true
+                    
+                    echo ""
+                    echo "=== Deployment Summary ==="
+                    if grep -q "✅ ALL VALIDATIONS PASSED" validation.log; then
+                      echo "🎉 ALL VALIDATIONS PASSED!"
+                    else
+                      echo "⚠️  Check validation results above"
+                    fi
+            
+            # Substitutions for the build
+            substitutions:
+              _PROJECT_ID: ${project_id}
+              _TARGET_VM: ${target_vm}
+              _VM_ZONE: ${vm_zone}
+              _PLAYBOOK: ${playbook}
+            
+            tags: ["ansible-workflow", "automated-deployment"]
+            timeout: "1800s"
+        result: build_result
+
+    - log_build_started:
+        call: sys.log
+        args:
+          text: '${"Cloud Build started: " + build_result.metadata.build.id}'
+          severity: "INFO"
+
+    - wait_for_build:
+        call: googleapis.cloudbuild.v1.projects.builds.get
+        args:
+          projectId: ${project_id}
+          id: ${build_result.metadata.build.id}
+        result: build_status
+
+    - check_build_status:
+        switch:
+          - condition: ${build_status.status == "SUCCESS"}
+            next: return_success
+          - condition: ${build_status.status == "FAILURE"}
+            next: return_failure
+          - condition: ${build_status.status == "TIMEOUT"}
+            next: return_timeout
+          - condition: ${build_status.status == "WORKING" or build_status.status == "QUEUED"}
+            next: wait_and_retry
+
+    - wait_and_retry:
+        call: sys.sleep
+        args:
+          seconds: 10
+        next: wait_for_build
+
+    - return_success:
+        return:
+          status: "SUCCESS"
+          build_id: ${build_result.metadata.build.id}
+          target_vm: ${target_vm}
+          playbook: ${playbook}
+          build_logs: '${"https://console.cloud.google.com/cloud-build/builds/" + build_result.metadata.build.id + "?project=" + project_id}'
+          message: "Ansible deployment completed successfully"
+
+    - return_failure:
+        return:
+          status: "FAILURE"
+          build_id: ${build_result.metadata.build.id}
+          target_vm: ${target_vm}
+          playbook: ${playbook}
+          build_logs: '${"https://console.cloud.google.com/cloud-build/builds/" + build_result.metadata.build.id + "?project=" + project_id}'
+          message: "Ansible deployment failed. Check build logs for details."
+
+    - return_timeout:
+        return:
+          status: "TIMEOUT"
+          build_id: ${build_result.metadata.build.id}
+          target_vm: ${target_vm}
+          playbook: ${playbook}
+          build_logs: '${"https://console.cloud.google.com/cloud-build/builds/" + build_result.metadata.build.id + "?project=" + project_id}'
+          message: "Cloud Build timed out after 30 minutes"
+
