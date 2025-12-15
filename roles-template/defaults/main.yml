@@ -1,9 +1,0 @@
-# Default vars (ovverride in ars/rhel*.yml if needed)
-
- 
-
-pkg_name: "example-cleint"
-
-pkg_validate_cmd: "example --version"
-
-extra_repos: []

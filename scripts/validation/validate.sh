@@ -18,13 +18,19 @@ NC='\033[0m' # No Color
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VALIDATION_LOG="${SCRIPT_DIR}/validation_results_$(date +%Y%m%d_%H%M%S).log"
 TEMP_DIR="/tmp/validate_all_$$"
+VALIDATION_SCRIPTS_DIR="${TEMP_DIR}/validation_scripts"
 
-# Runtime validation scripts
+# GCS bucket configuration (can be overridden via environment variable)
+GCS_BUCKET="${GCS_VALIDATION_BUCKET:-sandbox-dev-478813-workflow-scripts}"
+GCS_SCRIPTS_PATH="${GCS_VALIDATION_SCRIPTS_PATH:-scripts/validation/roles}"
+
+# Runtime validation scripts - mapped to GCS paths
+# Format: "gcs_path:Runtime Name:Emoji:runtime_key"
 VALIDATION_SCRIPTS=(
-    "validate_python.sh:Python Runtime:🐍"
-    "validate_java.sh:Java SDK:☕"
-    "validate_node.sh:Node.js Runtime:🟢"
-    "validate_postgresql.sh:PostgreSQL Client:🐘"
+    "${GCS_SCRIPTS_PATH}/install-python/validation/validate.sh:Python Runtime:🐍:python"
+    "${GCS_SCRIPTS_PATH}/install-java-sdk/validation/validate.sh:Java SDK:☕:java"
+    "${GCS_SCRIPTS_PATH}/install-nodejs/validation/validate.sh:Node.js Runtime:🟢:node"
+    "${GCS_SCRIPTS_PATH}/install-database-cient/validation/validate.sh:Database Client:🐘:postgresql"
 )
 
 # Logging functions
@@ -68,7 +74,7 @@ OPTIONS:
     -s, --strategy      Validation strategy (default: per-runtime)
                         Options: per-runtime, global
     -r, --runtime       Validate specific runtime only
-                        Options: python, java, node, postgresql
+                        Options: python, java, node, postgresql (or database)
     -v, --verbose       Enable verbose output
     -c, --continue      Continue validation after failures (default: stop on first failure)
     -l, --log-file      Custom log file path (default: auto-generated)
@@ -138,9 +144,13 @@ parse_arguments() {
                 ;;
             -r|--runtime)
                 SPECIFIC_RUNTIME="$2"
-                if [[ "$SPECIFIC_RUNTIME" != "python" && "$SPECIFIC_RUNTIME" != "java" && "$SPECIFIC_RUNTIME" != "node" && "$SPECIFIC_RUNTIME" != "postgresql" ]]; then
-                    log_error "Invalid runtime: $SPECIFIC_RUNTIME. Use 'python', 'java', 'node', or 'postgresql'"
+                if [[ "$SPECIFIC_RUNTIME" != "python" && "$SPECIFIC_RUNTIME" != "java" && "$SPECIFIC_RUNTIME" != "node" && "$SPECIFIC_RUNTIME" != "postgresql" && "$SPECIFIC_RUNTIME" != "database" ]]; then
+                    log_error "Invalid runtime: $SPECIFIC_RUNTIME. Use 'python', 'java', 'node', 'postgresql', or 'database'"
                     exit 2
+                fi
+                # Map 'database' to 'postgresql' for compatibility
+                if [[ "$SPECIFIC_RUNTIME" == "database" ]]; then
+                    SPECIFIC_RUNTIME="postgresql"
                 fi
                 shift 2
                 ;;
@@ -208,29 +218,46 @@ Log File: $VALIDATION_LOG
 EOF
 
     log_info "Validation log initialized: $VALIDATION_LOG"
+    log_info "GCS Bucket: gs://${GCS_BUCKET}"
+    log_info "GCS Scripts Path: ${GCS_SCRIPTS_PATH}"
     
-    # Check that validation scripts exist
+    # Create directory for downloaded validation scripts
+    mkdir -p "$VALIDATION_SCRIPTS_DIR"
+    log_info "Created validation scripts directory: $VALIDATION_SCRIPTS_DIR"
+    
+    # Check if gsutil is available
+    if ! command -v gsutil &> /dev/null; then
+        log_error "gsutil is not installed or not in PATH"
+        log_error "Cannot download validation scripts from GCS"
+        return 1
+    fi
+    
+    # Download validation scripts from GCS
+    log_info "Downloading validation scripts from GCS..."
     local missing_scripts=()
     for script_info in "${VALIDATION_SCRIPTS[@]}"; do
-        local script_name=$(echo "$script_info" | cut -d: -f1)
-        if [[ ! -f "$SCRIPT_DIR/$script_name" ]]; then
-            missing_scripts+=("$script_name")
+        local gcs_path=$(echo "$script_info" | cut -d: -f1)
+        local runtime_name=$(echo "$script_info" | cut -d: -f2)
+        local gcs_full_path="gs://${GCS_BUCKET}/${gcs_path}"
+        local local_script="${VALIDATION_SCRIPTS_DIR}/$(basename ${gcs_path})"
+        
+        log_info "Downloading ${runtime_name} validation script from ${gcs_full_path}..."
+        if gsutil cp "${gcs_full_path}" "${local_script}" 2>/dev/null; then
+            chmod +x "${local_script}"
+            log_success "Downloaded ${runtime_name} validation script"
+        else
+            missing_scripts+=("${gcs_full_path}")
+            log_error "Failed to download ${runtime_name} validation script from ${gcs_full_path}"
         fi
     done
     
     if [[ ${#missing_scripts[@]} -gt 0 ]]; then
-        log_error "Missing validation scripts: ${missing_scripts[*]}"
-        log_error "Please ensure all validation scripts are present in: $SCRIPT_DIR"
+        log_error "Missing validation scripts in GCS: ${missing_scripts[*]}"
+        log_error "Please ensure all validation scripts are uploaded to: gs://${GCS_BUCKET}/${GCS_SCRIPTS_PATH}/"
         return 1
     fi
     
-    log_success "All validation scripts found"
-    
-    # Make scripts executable
-    for script_info in "${VALIDATION_SCRIPTS[@]}"; do
-        local script_name=$(echo "$script_info" | cut -d: -f1)
-        chmod +x "$SCRIPT_DIR/$script_name"
-    done
+    log_success "All validation scripts downloaded from GCS"
     
     log_success "Environment setup completed"
     return 0
@@ -249,16 +276,19 @@ trap cleanup EXIT
 
 # Run single validation script
 run_validation() {
-    local script_name="$1"
+    local gcs_path="$1"
     local runtime_name="$2"
     local emoji="$3"
-    local runtime_lower=$(echo "$runtime_name" | tr '[:upper:]' '[:lower:]')
+    local runtime_key="$4"
+    local script_filename=$(basename "${gcs_path}")
+    local validation_script="${VALIDATION_SCRIPTS_DIR}/${script_filename}"
+    local runtime_lower=$(echo "$runtime_name" | tr '[:upper:]' '[:lower:]' | tr ' ' '_')
     local output_file="$TEMP_DIR/${runtime_lower}_validation.log"
     
     log_step "$emoji $runtime_name Validation"
     
     if [[ "$VERBOSE" == "true" ]]; then
-        log_info "Executing: $SCRIPT_DIR/$script_name"
+        log_info "Executing: $validation_script"
         log_info "Output will be saved to: $output_file"
     fi
     
@@ -266,7 +296,7 @@ run_validation() {
     local start_time=$(date +%s)
     local exit_code=0
     
-    if "$SCRIPT_DIR/$script_name" > "$output_file" 2>&1; then
+    if "$validation_script" > "$output_file" 2>&1; then
         exit_code=0
     else
         exit_code=$?
@@ -315,20 +345,19 @@ run_per_runtime_validation() {
     local total_start_time=$(date +%s)
     
     for script_info in "${VALIDATION_SCRIPTS[@]}"; do
-        local script_name=$(echo "$script_info" | cut -d: -f1)
+        local gcs_path=$(echo "$script_info" | cut -d: -f1)
         local runtime_name=$(echo "$script_info" | cut -d: -f2)
         local emoji=$(echo "$script_info" | cut -d: -f3)
+        local runtime_key=$(echo "$script_info" | cut -d: -f4)
         
         # Skip if specific runtime requested and this isn't it
         if [[ -n "$SPECIFIC_RUNTIME" ]]; then
-            local runtime_key=$(echo "$runtime_name" | tr '[:upper:]' '[:lower:]')
-            runtime_key="${runtime_key// */}"  # Take first word, lowercase
             if [[ "$runtime_key" != "$SPECIFIC_RUNTIME" ]]; then
                 continue
             fi
         fi
         
-        if run_validation "$script_name" "$runtime_name" "$emoji"; then
+        if run_validation "$gcs_path" "$runtime_name" "$emoji" "$runtime_key"; then
             passed_runtimes+=("$emoji $runtime_name")
         else
             failed_runtimes+=("$emoji $runtime_name")
