@@ -1,0 +1,928 @@
+#WORKFLOW CODE (COMBINED CASE1 CASE2)in this combined workflow since we were focusing to demo case 2 
+#I did not tested case 1 here but here under case 2 promote is not working while running this workflow in input use 
+#(this image id is nothing but the the image id which comes from sowmith build bake image)
+
+#while running this workflow in input use (this image id is nothing but the the image id which 
+#comes from sowmith build bake image)
+
+#INPUT {"image_id":"schwab-rhel9-persistent-1764702301","server_type":"ephemeral"}
+#INPUT {"image_id":"test-rhel-vm-agent-image","server_type":"persistent"}
+#INPUT {"image_id":"test-rhel-vm-agent-image","server_type":"ephemeral"}
+
+main:
+  params: [input]
+ 
+  steps:
+    - init:
+        assign:
+          # Common / Case 1 defaults
+          - project_id: sandbox-dev-478813
+          # image_id must be the image NAME, e.g. "schwab-rhel9-persistent-1764702301"
+          - image_id: ${default(map.get(input, "image_id"), "")}
+          - instance_name: ${default(map.get(input, "instance_name"), "")}
+          - override_scan_result: ${default(map.get(input, "override_scan_result"), "")}
+          - skip_destroy: ${default(map.get(input, "skip_destroy"), false)}
+          - skip_promotion: ${default(map.get(input, "skip_promotion"), false)}
+          - delete_image: ${default(map.get(input, "delete_image"), false)}
+          - project_number: ${default(map.get(input, "project_number"), sys.get_env("GOOGLE_CLOUD_PROJECT_NUMBER"))}
+          - region: ${default(map.get(input, "region"), "us-central1")}
+          - location_id: ${default(map.get(input, "location_id"), "us-central1")}
+
+          # Case switch: persistent or ephemeral
+          - server_type: ${default(map.get(input, "server_type"), "persistent")}
+
+          # Case 2 (ephemeral) specific settings (override via input if needed)
+          - display_project_id: ${default(map.get(input, "display_project_id"), "spoke-project1-476804")}
+          # GCS bucket for scripts (replaces repo)
+          - gcs_bucket: ${default(map.get(input, "gcs_bucket"), project_id + "-workflow-scripts")}
+          - gcs_scripts_path: ${default(map.get(input, "gcs_scripts_path"), "scripts")}
+
+          # Use kitchen SA by default for VM operations
+          - service_account: ${default(
+              map.get(input, "service_account"), "sa-kitchen-sh@sandbox-dev-478813.iam.gserviceaccount.com")}
+ 
+          - zone: ${default(map.get(input, "zone"), "us-central1-a")}
+          - machine_type: ${default(map.get(input, "machine_type"), "n1-standard-1")}
+ 
+    # Decide which case to run:
+    #   - persistent  → Case 1 flow only
+    #   - ephemeral   → Case 2 flow only
+    # Note: To run both in parallel, execute workflow twice with different server_type values
+    - route_server_type:
+        switch:
+          - condition: ${text.to_lower(server_type) == "ephemeral"}
+            next: validation_ephemeral
+        next: validation_persistent
+ 
+    # =========================
+    # CASE 1 — PERSISTENT FLOW
+    # =========================
+ 
+    # Start at validation (no create_build / creation step)
+    - validation_persistent:
+        call: validate_image
+        args:
+          image_id: ${image_id}
+          project_id: ${project_id}
+          location_id: ${location_id}
+          instance_name: ${instance_name}
+          override_scan_result: ${override_scan_result}
+          service_account: ${service_account}
+          gcs_bucket: ${gcs_bucket}
+          gcs_scripts_path: ${gcs_scripts_path}
+        result: validation_results
+ 
+    - set_persistent_context:
+        assign:
+          - validation_instance: ${validation_results.validation_instance}
+          - validation_scan_result: ${validation_results.scan_result}
+ 
+    # Promote gate:
+    # If scan_result != "Pass" OR skip_promotion = true → go straight to cleanup_step_persistent
+    # Else (scan_result == "Pass" and skip_promotion = false) → go to notify (promotion)
+    - check_result_persistent:
+        switch:
+          - condition: ${validation_scan_result != "Pass" or skip_promotion}
+            next: cleanup_step_persistent
+        next: notify_cleanup_promote_step
+ 
+    # "Promotion" step for you = notify promote/cleanup workflow via Pub/Sub (only on Pass)
+    - notify_cleanup_promote_step:
+        call: notify_cleanup_promote
+        args:
+          project_id: ${project_id}
+          image_id: ${image_id}
+          scan_result: ${validation_scan_result}
+          validation_instance: ${validation_instance}
+          skip_destroy: ${skip_destroy}
+          skip_promotion: ${skip_promotion}
+        result: notification_results
+        next: cleanup_step_persistent
+ 
+    # Cleanup step – runs for both Pass and Fail
+    - cleanup_step_persistent:
+        call: cleanup_artifacts
+        args:
+          image_id: ${image_id}
+          project_id: ${project_id}
+          location_id: ${location_id}
+          instance_name: ${validation_instance}
+          skip_destroy: ${skip_destroy}
+          delete_image: ${delete_image}
+          scan_result: ${validation_scan_result}
+        result: cleanup_results
+        next: return_result
+ 
+    # =========================
+    # CASE 2 — EPHEMERAL FLOW
+    # =========================
+ 
+    # Step 1: Create VM with startup script and wait for Pass/Fail from serial-port output
+    - validation_ephemeral:
+        call: validate_image_ephemeral
+        args:
+          image_id: ${image_id}
+          project_id: ${project_id}
+          display_project_id: ${display_project_id}
+          gcs_bucket: ${gcs_bucket}
+          gcs_scripts_path: ${gcs_scripts_path}
+          service_account: ${service_account}
+          zone: ${zone}
+          machine_type: ${machine_type}
+        result: validation_ephemeral_results
+ 
+    - set_ephemeral_context:
+        assign:
+          # NOTE: validate_image_ephemeral returns validation_instance (mapped from instance_name)
+          - validation_instance: ${validation_ephemeral_results.validation_instance}
+          - validation_scan_result: ${validation_ephemeral_results.scan_result}
+ 
+    # Step 2: Check if validation passed
+    - check_result_ephemeral:
+        switch:
+          - condition: ${validation_scan_result != "Pass"}
+            next: cleanup_step_ephemeral
+        next: remove_agent_and_create_image_step
+ 
+    # Step 3: Create new image (Qualys already removed inside startup-script)
+    - remove_agent_and_create_image_step:
+        call: remove_agent_create_image
+        args:
+          instance_name: ${validation_instance}
+          project_id: ${project_id}
+          zone: ${zone}
+          source_image_id: ${image_id}
+        result: new_image_result
+        next: promotion_ephemeral
+ 
+    # Step 4: Promote new image to display project (only if Pass)
+    - promotion_ephemeral:
+        call: promote_ephemeral_image
+        args:
+          image_id: ${new_image_result.new_image_id}  
+          project_id: ${project_id}  
+          display_project_id: ${display_project_id}
+        result: promotion_result
+        next: set_new_image_id
+ 
+    - set_new_image_id:
+        assign:
+          - new_image_id: ${new_image_result.new_image_id}
+        next: cleanup_step_ephemeral
+ 
+    # Step 5: Cleanup VM (always)
+    - cleanup_step_ephemeral:
+        call: cleanup_ephemeral_vm
+        args:
+          instance_name: ${validation_instance}
+          project_id: ${project_id}
+          zone: ${zone}
+        result: cleanup_results
+        next: return_result
+ 
+    # =========================
+    # COMMON RETURN
+    # =========================
+    - return_result:
+        return:
+          server_type: ${server_type}
+          image_id: ${image_id}
+          validation_status: ${validation_scan_result}
+          scan_result: ${validation_scan_result}
+          validation_passed: ${validation_scan_result == "Pass"}
+          validation_failed: ${validation_scan_result == "Fail"}
+          validation_instance: ${validation_instance}
+          notification_result: ${default(notification_results, "skipped")}
+          cleanup_result: ${cleanup_results}
+          new_image_id: ${default(new_image_id, "not_applicable")}
+          promotion_result: ${default(promotion_result, "skipped")}
+ 
+# -------------------------------------------------------------------
+#   NOTIFICATION SUB-WORKFLOW (Case 1 — Pub/Sub trigger)
+# -------------------------------------------------------------------
+ 
+notify_cleanup_promote:
+  params: [project_id, image_id, scan_result, validation_instance, skip_destroy, skip_promotion]
+ 
+  steps:
+    - publish_message:
+        call: googleapis.pubsub.v1.projects.topics.publish
+        args:
+          topic: ${"projects/" + project_id + "/topics/runtime-workflow-promote-topic"}
+          body:
+            messages:
+              - attributes:
+                  image_id: ${image_id}
+                  scan_result: ${scan_result}
+                  validation_instance: ${validation_instance}
+                  skip_destroy: ${string(skip_destroy)}
+                  skip_promotion: ${string(skip_promotion)}
+                  source_workflow: "runtime-validation"
+                data: ${base64.encode(text.encode("trigger-cleanup-promote"))}
+        result: pubsub_result
+ 
+    - return_pubsub:
+        return: ${pubsub_result}
+ 
+# -------------------------------------------------------------------
+#   CASE 1: VALIDATION PIPELINE
+# -------------------------------------------------------------------
+ 
+validate_image:
+  params: [image_id, project_id, location_id, instance_name, override_scan_result, service_account, gcs_bucket, gcs_scripts_path]
+ 
+  steps:
+    # 1) Allow manual override
+    - check_override:
+        switch:
+          - condition: ${text.to_lower(override_scan_result) == "pass"}
+            next: return_override_pass
+          - condition: ${text.to_lower(override_scan_result) == "fail"}
+            next: return_override_fail
+        next: skip_instance_creation
+ 
+    # 2) If a validation instance already exists with the expected name, treat it as already validated
+    - skip_instance_creation:
+        switch:
+          - condition: ${instance_name == image_id + "-validation"}
+            next: derive_pass_from_existing
+        next: create_instance
+ 
+    # 3) Normal path – create validation VM and run validate.sh
+    - create_instance:
+        call: validation_instance
+        args:
+          image_id: ${image_id}
+          project_id: ${project_id}
+          location_id: ${location_id}
+          service_account: ${service_account}
+          gcs_bucket: ${gcs_bucket}
+          gcs_scripts_path: ${gcs_scripts_path}
+        result: validation_output
+ 
+    - assign_results:
+        assign:
+          - instance_name: ${validation_output.instance_name}
+          - scan_result: ${validation_output.scan_result}
+ 
+    - return_multiple_values:
+        return:
+          validation_instance: ${instance_name}
+          scan_result: ${scan_result}
+ 
+    # 4) If caller passed in an already-known validation instance, mark it Pass
+    - derive_pass_from_existing:
+        return:
+          validation_instance: ${instance_name}
+          scan_result: "Pass"
+ 
+    # 5) Override handlers
+    - return_override_pass:
+        return:
+          validation_instance: ${instance_name}
+          scan_result: "Pass"
+ 
+    - return_override_fail:
+        return:
+          validation_instance: ${instance_name}
+          scan_result: "Fail"
+ 
+# -------------------------------------------------------------------
+#   CASE 1: VALIDATION INSTANCE CREATION (Cloud Build)
+# -------------------------------------------------------------------
+ 
+validation_instance:
+  params: [image_id, project_id, location_id, service_account, gcs_bucket, gcs_scripts_path]
+ 
+  steps:
+    - the_build:
+        call: googleapis.cloudbuild.v1.projects.builds.create
+        args:
+          projectId: ${project_id}
+          parent: ${"projects/" + project_id + "/locations/global"}
+          body:
+            steps:
+              - name: "gcr.io/cloud-builders/gcloud"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    set -e
+
+                    INSTANCE_NAME="${_CANDIDATE_IMAGE}-validation-persistent"
+                    echo "Creating validation VM: $${INSTANCE_NAME}"
+
+                    # Download validation script from GCS bucket
+                    echo "Downloading validate.sh from gs://${_GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate.sh"
+                    if ! gsutil cp gs://${_GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate.sh /workspace/validate.sh; then
+                      echo "ERROR: Failed to download validate.sh from GCS"
+                      exit 1
+                    fi
+                    chmod +x /workspace/validate.sh
+                    echo "✅ validate.sh downloaded and made executable"
+
+                    SA_CMD=""
+                    if [ -n "${_SERVICE_ACCOUNT}" ]; then
+                      SA_CMD="--service-account=${_SERVICE_ACCOUNT}"
+                    fi
+
+                    gcloud compute instances create "$${INSTANCE_NAME}" \
+                      --image=projects/${_PROJECT_ID}/global/images/${_CANDIDATE_IMAGE} \
+                      --machine-type=n1-standard-1 \
+                      --zone=us-central1-a \
+                      --project=${_PROJECT_ID} \
+                      --scopes=cloud-platform \
+                      $${SA_CMD}
+
+                    echo "Running master validation script (validate.sh) against $${INSTANCE_NAME}..."
+
+                    # Run validation script
+                    /workspace/validate.sh "$${INSTANCE_NAME}" | tee validation.log
+                    VALIDATION_EXIT_CODE=$?
+
+                    if [ $${VALIDATION_EXIT_CODE} -eq 0 ]; then
+                      VALIDATION_RESULT="Pass"
+                    else
+                      VALIDATION_RESULT="Fail"
+                    fi
+
+                    echo "{\"instance_name\":\"$${INSTANCE_NAME}\",\"scan_result\":\"$${VALIDATION_RESULT}\"}" > "$$BUILDER_OUTPUT/output"
+ 
+            substitutions:
+              _CANDIDATE_IMAGE: ${image_id}
+              _PROJECT_ID: ${project_id}
+              _GCS_BUCKET: ${gcs_bucket}
+              _GCS_SCRIPTS_PATH: ${gcs_scripts_path}
+              _SERVICE_ACCOUNT: ${service_account}
+            options:
+              dynamic_substitutions: true
+            tags:
+              - "schwab-rhel8"
+              - "validation_instance"
+        result: the_buildResults
+ 
+    - decode_build_result:
+        assign:
+          - validation_info_json: ${text.decode(base64.decode(the_buildResults.metadata.build.results.buildStepOutputs[0]))}
+          - validation_info: ${json.decode(validation_info_json)}
+          - instance_name: ${validation_info.instance_name}
+          - scan_result: ${validation_info.scan_result}
+ 
+    - check_build_status:
+        switch:
+          - condition: ${len(instance_name) > 0}
+            next: return_the_results
+        next: build_failed
+ 
+    - build_failed:
+        raise:
+          message: "Validation instance was not created or validation script failed."
+ 
+    - return_the_results:
+        return:
+          instance_name: ${instance_name}
+          scan_result: ${scan_result}
+ 
+# -------------------------------------------------------------------
+#   CASE 1: CLEANUP PIPELINE
+# -------------------------------------------------------------------
+ 
+cleanup_artifacts:
+  params: [image_id, project_id, location_id, instance_name, skip_destroy, delete_image, scan_result]
+ 
+  steps:
+    - skip_instance_creation:
+        switch:
+          - condition: ${skip_destroy}
+            next: return_skipped
+ 
+    - delete_instance:
+        call: googleapis.cloudbuild.v1.projects.builds.create
+        args:
+          projectId: ${project_id}
+          parent: ${"projects/" + project_id + "/locations/global"}
+          body:
+            steps:
+              - name: "gcr.io/cloud-builders/gcloud"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    gcloud compute instances stop ${_INSTANCE_NAME} --zone us-central1-a --project=${_PROJECT_ID}
+                    gcloud compute instances delete ${_INSTANCE_NAME} --zone us-central1-a --project=${_PROJECT_ID} --quiet
+            substitutions:
+              _INSTANCE_NAME: ${instance_name}
+              _PROJECT_ID: ${project_id}
+            options:
+              dynamic_substitutions: true
+            tags:
+              - "delete_instance"
+        result: delete_instanceResults
+ 
+    - check_delete_image:
+        switch:
+          - condition: ${not delete_image}
+            assign:
+              - delete_imageResults: "skipped"
+            next: return_cleanup
+        next: delete_image
+    
+    - delete_image:
+        call: googleapis.cloudbuild.v1.projects.builds.create
+        args:
+          projectId: ${project_id}
+          parent: ${"projects/" + project_id + "/locations/global"}
+          body:
+            steps:
+              - name: "gcr.io/cloud-builders/gcloud"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    if [ "${_SCAN_FAIL}" != "Pass" ]; then
+                      gcloud logging write FAILED-SCAN-LOG "Validation failed for ${_CANDIDATE_IMAGE}" --severity "WARNING" --project=${_PROJECT_ID}
+                    fi
+
+                    echo "Deleting image ${_CANDIDATE_IMAGE} (delete_image flag is true)"
+                    gcloud compute images delete ${_CANDIDATE_IMAGE} --project=${_PROJECT_ID} --quiet
+            substitutions:
+              _SCAN_FAIL: ${scan_result}
+              _CANDIDATE_IMAGE: ${image_id}
+              _PROJECT_ID: ${project_id}
+            options:
+              dynamic_substitutions: true
+            tags:
+              - "delete_image"
+        result: delete_imageResults
+ 
+    - return_cleanup:
+        return:
+          instance_cleanup: ${delete_instanceResults}
+          image_cleanup: ${default(delete_imageResults, "skipped")}
+ 
+    - return_skipped:
+        return:
+          instance_cleanup: "skipped"
+          image_cleanup: "skipped"
+ 
+# -------------------------------------------------------------------
+#   CASE 2: VALIDATION (Ephemeral) – FIXED VERSION
+# -------------------------------------------------------------------
+ 
+validate_image_ephemeral:
+  params:
+    - image_id
+    - project_id
+    - display_project_id
+    - gcs_bucket
+    - gcs_scripts_path
+    - service_account
+    - zone
+    - machine_type
+ 
+  steps:
+    - the_build_ephemeral:
+        call: googleapis.cloudbuild.v1.projects.builds.create
+        args:
+          projectId: ${project_id}
+          parent: ${"projects/" + project_id + "/locations/global"}
+          body:
+            steps:
+              # 0. Prepare GCS bucket and validation script path.
+              - name: "gcr.io/cloud-builders/gcloud"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    set -e
+
+                    REGION=$$(echo "${_ZONE}" | awk -F'-' '{print $1 "-" $2}')
+
+                    # 1. Define Bucket Name (use provided bucket or default)
+                    GCS_BUCKET="gs://${_GCS_BUCKET}"
+                    GCS_SCRIPT_PATH="$${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate.sh"
+                    GCS_EPHEMERAL_SCRIPT_PATH="$${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate_ephemeral.sh"
+
+                    echo "Using GCS bucket: $${GCS_BUCKET}"
+                    echo "Validation script will be at: $${GCS_SCRIPT_PATH}"
+                    echo "Ephemeral script will be at: $${GCS_EPHEMERAL_SCRIPT_PATH}"
+
+                    # 2. Ensure bucket exists (Ignores error if it already exists)
+                    gsutil mb -p ${_PROJECT_ID} -l $${REGION} $${GCS_BUCKET} || true
+
+                    # 3. Verify required scripts exist in bucket (with retry and better error handling)
+                    echo "Checking for validate.sh at: $${GCS_SCRIPT_PATH}"
+                    if ! gsutil ls $${GCS_SCRIPT_PATH} &>/dev/null; then
+                      echo "WARNING: validate.sh not found at $${GCS_SCRIPT_PATH}"
+                      echo "Listing available files in $${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/:"
+                      gsutil ls $${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/ 2>&1 || true
+                      echo "ERROR: validate.sh not found. Please ensure it's uploaded."
+                      exit 1
+                    fi
+                    
+                    echo "Checking for validate_ephemeral.sh at: $${GCS_EPHEMERAL_SCRIPT_PATH}"
+                    if ! gsutil ls $${GCS_EPHEMERAL_SCRIPT_PATH} &>/dev/null; then
+                      echo "WARNING: validate_ephemeral.sh not found at $${GCS_EPHEMERAL_SCRIPT_PATH}"
+                      echo "Listing available files in $${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/:"
+                      gsutil ls $${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/ 2>&1 || true
+                      echo "ERROR: validate_ephemeral.sh not found. Please ensure it's uploaded."
+                      exit 1
+                    fi
+                    
+                    echo "✅ All required scripts found in GCS bucket"
+
+                    # Pass variables to next step via simple workspace file
+                    echo "{\"gcs_script_path\":\"$${GCS_SCRIPT_PATH}\",\"region\":\"$${REGION}\"}" > /workspace/step0_output.json
+ 
+              # 1. Validation Logic (SOFT FAIL FIX)
+              # If validation fails, we record "Fail" but EXIT 0 (Success) so the pipeline continues to cleanup.
+              - name: "gcr.io/cloud-builders/gcloud"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    set -e
+ 
+                    INSTANCE_NAME="${_IMAGE_ID}-validation-ephemeral"
+                    GCS_SCRIPT_PATH=$$(grep -oP '"gcs_script_path":"\K[^"]+' /workspace/step0_output.json)
+                    REGION=$$(grep -oP '"region":"\K[^"]+' /workspace/step0_output.json)
+                    
+                    # GCS paths for results
+                    GCS_RESULT_PATH="gs://${_GCS_BUCKET}/${_IMAGE_ID}_result.json"
+                    GCS_LOG_DIR="gs://${_GCS_BUCKET}/validation_logs"
+
+                    echo "Creating validation VM: $${INSTANCE_NAME}"
+                    
+                    # Check if image exists before creating VM
+                    echo "Checking if image exists: projects/${_PROJECT_ID}/global/images/${_IMAGE_ID}"
+                    if ! gcloud compute images describe ${_IMAGE_ID} --project=${_PROJECT_ID} --format="value(name)" &>/dev/null; then
+                      echo "ERROR: Image '${_IMAGE_ID}' not found in project '${_PROJECT_ID}'"
+                      echo "Available images in project:"
+                      gcloud compute images list --project=${_PROJECT_ID} --format="table(name)" --limit=10
+                      exit 1
+                    fi
+                    echo "✅ Image found: ${_IMAGE_ID}"
+
+                    SA_CMD=""
+                    if [ -n "${_SERVICE_ACCOUNT}" ]; then
+                      SA_CMD="--service-account=${_SERVICE_ACCOUNT}"
+                    fi
+
+                    # Download validate_ephemeral.sh from GCS bucket
+                    echo "Downloading validate_ephemeral.sh from gs://${_GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate_ephemeral.sh"
+                    if ! gsutil cp gs://${_GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate_ephemeral.sh /workspace/validate_ephemeral.sh; then
+                      echo "ERROR: Failed to download validate_ephemeral.sh from GCS"
+                      exit 1
+                    fi
+                    chmod +x /workspace/validate_ephemeral.sh
+                    echo "✅ validate_ephemeral.sh downloaded and made executable"
+
+                    # Check if instance already exists and delete it if needed
+                    if gcloud compute instances describe "$${INSTANCE_NAME}" --zone=${_ZONE} --project=${_PROJECT_ID} &>/dev/null; then
+                      echo "WARNING: Instance $${INSTANCE_NAME} already exists. Deleting it first..."
+                      gcloud compute instances delete "$${INSTANCE_NAME}" --zone=${_ZONE} --project=${_PROJECT_ID} --quiet || true
+                      echo "Waiting 10 seconds for instance deletion to complete..."
+                      sleep 10
+                    fi
+
+                    gcloud compute instances create "$${INSTANCE_NAME}" \
+                      --image=projects/${_PROJECT_ID}/global/images/${_IMAGE_ID} \
+                      --machine-type=${_MACHINE_TYPE} \
+                      --zone=${_ZONE} \
+                      --project=${_PROJECT_ID} \
+                      --scopes=cloud-platform \
+                      $${SA_CMD} \
+                      --metadata-from-file=startup-script=/workspace/validate_ephemeral.sh \
+                      --metadata=validation-script-gcs-path=$${GCS_SCRIPT_PATH},validation-result-gcs-path=$${GCS_RESULT_PATH},instance-name=$${INSTANCE_NAME}
+ 
+                    echo "Polling serial port for result..."
+                    RESULT="Fail" # Default to Fail
+                    SERIAL_RESULT_FOUND=false
+
+                    for i in {1..60}; do
+                      SERIAL=$$(gcloud compute instances get-serial-port-output "$${INSTANCE_NAME}" \
+                        --zone=${_ZONE} --project=${_PROJECT_ID} --port=1 || true)
+
+                      if echo "$${SERIAL}" | grep -q "RUNTIME_VALIDATION_RESULT=Pass"; then
+                        RESULT="Pass"
+                        SERIAL_RESULT_FOUND=true
+                        break
+                      elif echo "$${SERIAL}" | grep -q "RUNTIME_VALIDATION_RESULT=Fail"; then
+                        RESULT="Fail"
+                        SERIAL_RESULT_FOUND=true
+                        break
+                      fi
+                      sleep 10
+                    done
+
+                    # NOTE: NOT deleting GCS script - it needs to remain for future runs
+                    # gsutil rm $${GCS_SCRIPT_PATH} || true
+
+                    echo "Validation Result from serial port: $${RESULT}"
+                    
+                    # Try to read result from GCS (uploaded by startup script)
+                    # Wait a bit for the upload to complete after VM shutdown
+                    echo "Waiting for GCS result upload (checking every 5 seconds, max 30 seconds)..."
+                    GCS_RESULT_FOUND=false
+                    for i in {1..6}; do
+                      if gsutil ls $${GCS_RESULT_PATH} &>/dev/null; then
+                        echo "Result found in GCS, downloading..."
+                        gsutil cp $${GCS_RESULT_PATH} /workspace/step1_output.json
+                        # Verify JSON is valid
+                        if python3 -m json.tool /workspace/step1_output.json > /dev/null 2>&1; then
+                          GCS_RESULT_FOUND=true
+                          echo "Successfully retrieved result from GCS"
+                          # Extract result from JSON
+                          RESULT=$$(python3 -c "import json; print(json.load(open('/workspace/step1_output.json'))['scan_result'])" 2>/dev/null || echo "$${RESULT}")
+                          break
+                        else
+                          echo "Warning: GCS result JSON invalid, will use serial port result"
+                        fi
+                      fi
+                      sleep 5
+                    done
+                    
+                    if [ "$${GCS_RESULT_FOUND}" = "false" ]; then
+                      echo "Result not found in GCS, using serial port result"
+                      # CRITICAL: We write the result and exit successfully even if it Failed.
+                      # This ensures the rest of the pipeline runs (cleanup and image creation/deletion).
+                      # Use INSTANCE_NAME which should already have -ephemeral suffix
+                      echo "{\"instance_name\":\"$${INSTANCE_NAME}\",\"scan_result\":\"$${RESULT}\",\"source\":\"serial_port\"}" > /workspace/step1_output.json
+                    else
+                      echo "Final validation result: $${RESULT}"
+                    fi
+ 
+              # 2. Upload result to GCS (Reliable data passing to Workflow)
+              - name: "gcr.io/cloud-builders/gcloud"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    set -e
+ 
+                    GCS_RESULT_PATH="gs://${_GCS_BUCKET}/${_IMAGE_ID}_result.json"
+                    gsutil cp /workspace/step1_output.json $${GCS_RESULT_PATH}
+ 
+            substitutions:
+              _IMAGE_ID: ${image_id}
+              _PROJECT_ID: ${project_id}
+              _SERVICE_ACCOUNT: ${service_account}
+              _ZONE: ${zone}
+              _MACHINE_TYPE: ${machine_type}
+              _GCS_BUCKET: ${gcs_bucket}
+              _GCS_SCRIPTS_PATH: ${gcs_scripts_path}
+ 
+            options:
+              dynamic_substitutions: true
+ 
+            tags:
+              - "validation_ephemeral"
+ 
+        result: the_build_ephemeralResults
+ 
+    # 3. Read the result directly from GCS
+    - read_gcs_result:
+        call: googleapis.storage.v1.objects.get
+        args:
+          bucket: ${gcs_bucket}
+          object: ${image_id + "_result.json"}
+          alt: "media"
+        result: gcs_file_content
+ 
+    # 4. Parse the result
+    - parse_result:
+        assign:
+          - result: ${gcs_file_content}
+          - instance_name_from_gcs: ${result.instance_name}
+          - scan_result: ${result.scan_result}
+          # Ensure instance name has -ephemeral suffix (fix for old GCS results)
+          - instance_name: ${image_id + "-validation-ephemeral"}
+
+    - return_validation_result:
+        return:
+          validation_instance: ${instance_name}
+          scan_result: ${scan_result}
+ 
+# -------------------------------------------------------------------
+#   CASE 2: CREATE IMAGE (Qualys already removed inside VM)
+# -------------------------------------------------------------------
+ 
+remove_agent_create_image:
+  params: [instance_name, source_image_id, project_id, zone]
+ 
+  steps:
+    - remove_agent_and_image:
+        call: googleapis.cloudbuild.v1.projects.builds.create
+        args:
+          projectId: ${project_id}
+          parent: ${"projects/" + project_id + "/locations/global"}
+          body:
+            steps:
+              - name: "gcr.io/cloud-builders/gcloud"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    set -e
+                    set -o pipefail
+                   
+                    instance_name="${_INSTANCE_NAME}"
+                    project_id="${_PROJECT_ID}"
+                    zone="${_ZONE}"
+                    image_id="${_IMAGE_ID_VALUE}"
+                   
+                    # Create unique image name (short format to stay under 63 chars)
+                    unique_suffix=$(date +%m%d%H%M%S)
+                    # Remove 'persistent' and add 'ephemeral' with short timestamp
+                    image_id_stripped="${image_id/persistent/ephemeral}"
+                    # Keep name short: base-name-ephemeral-timestamp (max 63 chars)
+                    new_image_name="${image_id_stripped}-ephemeral-${unique_suffix}"
+ 
+                    echo "[INFO] Starting image creation process" >&2
+                    echo "[INFO] Instance: $instance_name, Zone: $zone" >&2
+                    echo "[INFO] New Image: $new_image_name" >&2
+ 
+                    # Stop instance (VM may already be stopped by startup script)
+                    echo "[INFO] Stopping VM $instance_name..." >&2
+                    gcloud compute instances stop "$instance_name" \
+                      --zone="$zone" \
+                      --project="$project_id" \
+                      --quiet 2>&1 >&2 || echo "[INFO] Instance already stopped or not found" >&2
+                    
+                    echo "[INFO] Waiting 5 seconds for disk to settle..." >&2
+                    sleep 5
+                   
+                    # Create image
+                    echo "[INFO] Creating new image from VM disk..." >&2
+                    gcloud compute images create "$new_image_name" \
+                      --source-disk="$instance_name" \
+                      --source-disk-zone="$zone" \
+                      --project="$project_id" \
+                      --description="Validated and cleaned (Agent removed via startup script, Ephemeral Ready)" \
+                      --family="rhel-runtime" \
+                      --labels="source_image=$image_id,agent=removed,validation_status=passed,ephemeral=true" 2>&1 >&2 || exit 1
+                     
+                    # Wait for image READY status (simplified, faster)
+                    for i in {1..15}; do
+                      status=$(gcloud compute images describe "$new_image_name" --project="$project_id" --format="get(status)" 2>&1 || echo "PENDING")
+                      if [ "$status" = "READY" ]; then
+                        echo "[SUCCESS] Image is READY" >&2
+                        break
+                      elif [ "$status" = "FAILED" ]; then
+                        echo "[ERROR] Image creation failed" >&2
+                        exit 1
+                      fi
+                      sleep 5
+                    done
+                   
+                    # Write JSON output to the special file for Cloud Build result metadata
+                    echo "[INFO] Image successfully created: $new_image_name" >&2
+                    echo "{\"new_image_id\":\"$new_image_name\",\"source_image_id\":\"$image_id\"}" > "$$BUILDER_OUTPUT/output"
+                   
+            substitutions:
+              _INSTANCE_NAME: ${instance_name}
+              _PROJECT_ID: ${project_id}
+              _ZONE: ${zone}
+              _IMAGE_ID_VALUE: ${source_image_id}
+            tags: ["remove-agent", "create-image"]
+            options:
+              dynamic_substitutions: true
+        result: the_build_results
+ 
+    - decode_image_result:
+        assign:
+          # Successfully decode the base64 output from the build
+          - image_info_json: ${text.decode(base64.decode(the_build_results.metadata.build.results.buildStepOutputs[0]))}
+          - image_info: ${json.decode(image_info_json)}
+          - new_image_id: ${image_info.new_image_id}
+          - source_image_id_result: ${image_info.source_image_id}
+ 
+    - check_build_status:
+        switch:
+          - condition: ${len(new_image_id) > 0}
+            next: return_the_results
+        next: build_failed
+ 
+    - build_failed:
+        raise:
+          message: "Ephemeral image was not created."
+ 
+    - return_the_results:
+        return:
+          # REVERTED FIX: The main workflow expects this key, so we must return it.
+          new_image_id: ${new_image_id}
+          source_image_id_from_creation: ${source_image_id_result}
+ 
+# -------------------------------------------------------------------
+#   CASE 2: PROMOTE IMAGE
+# -------------------------------------------------------------------
+ 
+promote_ephemeral_image:
+  params: [image_id, project_id, display_project_id]
+ 
+  steps:
+    - promote:
+        call: googleapis.cloudbuild.v1.projects.builds.create
+        args:
+          projectId: ${project_id}
+          parent: ${"projects/" + project_id + "/locations/global"}
+          body:
+            steps:
+              - name: "gcr.io/cloud-builders/gcloud"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    set -e
+                   
+                    # Use the substitution variables directly
+                    # These will be replaced by Cloud Build before execution
+                   
+                    # Use short timestamp to keep name under 63 chars
+                    PROMOTED_SUFFIX=$$(date +%m%d%H%M%S)
+                    # Use source image name directly (it's already ephemeral and validated)
+                    DISPLAY_IMAGE_NAME="${_IMAGE_ID_SUB}"
+                   
+                    echo "Promoting image ${_IMAGE_ID_SUB} from ${_PROJECT_ID_SUB} to ${_DISPLAY_PROJECT_ID_SUB} as $${DISPLAY_IMAGE_NAME}..."
+                   
+                    gcloud compute images create "$${DISPLAY_IMAGE_NAME}" \
+                      --source-image="projects/${_PROJECT_ID_SUB}/global/images/${_IMAGE_ID_SUB}" \
+                      --project="${_DISPLAY_PROJECT_ID_SUB}" \
+                      --description="Promoted validated ephemeral image from ${_PROJECT_ID_SUB} (Qualys agent removed)" \
+                      --family="rhel-runtime" \
+                      --labels="source_image=${_IMAGE_ID_SUB},source_project=${_PROJECT_ID_SUB},validation_status=passed,promoted_date=$${PROMOTED_SUFFIX},ephemeral=true"
+                     
+                    echo "Waiting for promoted image to be ready..."
+                    for i in {1..15}; do
+                      STATUS=$$(gcloud compute images describe "$${DISPLAY_IMAGE_NAME}" \
+                        --project="${_DISPLAY_PROJECT_ID_SUB}" \
+                        --format="get(status)" 2>/dev/null || echo "NOT_FOUND")
+                     
+                      if [ "$${STATUS}" = "READY" ]; then
+                        echo "Image is READY"
+                        break
+                      elif [ "$${STATUS}" = "FAILED" ]; then
+                        echo "ERROR: Promoted image creation failed"
+                        exit 1
+                      fi
+                      sleep 5
+                    done
+                   
+                    echo "Image promotion process completed for $${DISPLAY_IMAGE_NAME}!"
+            substitutions:
+              _IMAGE_ID_SUB: ${image_id}
+              _PROJECT_ID_SUB: ${project_id}
+              _DISPLAY_PROJECT_ID_SUB: ${display_project_id}
+            options:
+              # No dynamic_substitutions
+            tags:
+              - "promotion"
+              - "ephemeral"
+        result: promote_result
+ 
+    - return_promote_result:
+        return: ${"Image promoted successfully with ephemeral label (see Cloud Build logs for details)"}
+
+
+
+# -------------------------------------------------------------------
+#   CASE 2: CLEANUP — Delete validation VM
+#FIX: Ensures this step does not fail if the VM was already deleted
+# by the internal cleanup of the 'validate_image_ephemeral' step.
+# -------------------------------------------------------------------
+cleanup_ephemeral_vm:
+  params: [instance_name, project_id, zone]
+ 
+  steps:
+    - delete_vm:
+        call: googleapis.cloudbuild.v1.projects.builds.create
+        args:
+          projectId: ${project_id}
+          parent: ${"projects/" + project_id + "/locations/global"}
+          body:
+            steps:
+              - name: "gcr.io/cloud-builders/gcloud"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    set -e
+                    INSTANCE_NAME="${_INSTANCE_NAME}"
+                   
+                    echo "Attempting to delete VM: $${INSTANCE_NAME} in zone ${_ZONE}..."
+                   
+                    # CRITICAL FIX: The "|| true" ensures that if the gcloud command fails
+                    # because the resource is NOT_FOUND (404), the shell script exits 0 (success).
+                    gcloud compute instances delete "$${INSTANCE_NAME}" \
+                      --zone="${_ZONE}" \
+                      --project="${_PROJECT_ID}" \
+                      --quiet || true
+                     
+                    echo "VM deletion attempt complete (non-critical failure ignored)."
+           
+            substitutions:
+              _INSTANCE_NAME: ${instance_name}
+              _PROJECT_ID: ${project_id}
+              _ZONE: ${zone}
+        result: delete_vm_results
+
