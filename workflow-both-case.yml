@@ -703,8 +703,8 @@ validate_image_ephemeral:
                     # Wait a bit for the message to be published after VM shutdown
                     echo "Waiting for Pub/Sub message (checking every 5 seconds, max 30 seconds)..."
                     PUBSUB_RESULT_FOUND=false
-                    # CONFIGURATION: Replace <<PUBSUB_VALIDATION_TOPIC_NAME>> with your Pub/Sub topic name
-                    PUBSUB_TOPIC="projects/${_PROJECT_ID}/topics/<<PUBSUB_VALIDATION_TOPIC_NAME>>"
+                      # CONFIGURATION: Replace <<PUBSUB_VALIDATION_TOPIC_NAME>> with your Pub/Sub topic name
+                      PUBSUB_TOPIC="projects/${_PROJECT_ID}/topics/runtime-validation-results"
                     
                     # Create a temporary subscription to pull messages
                     SUBSCRIPTION_NAME="temp-sub-$${INSTANCE_NAME}-$$(date +%s)"
