@@ -20,17 +20,38 @@ VALIDATION_LOG="${SCRIPT_DIR}/validation_results_$(date +%Y%m%d_%H%M%S).log"
 TEMP_DIR="/tmp/validate_all_$$"
 VALIDATION_SCRIPTS_DIR="${TEMP_DIR}/validation_scripts"
 
-# GCS bucket configuration (can be overridden via environment variable)
-GCS_BUCKET="${GCS_VALIDATION_BUCKET:-sandbox-dev-478813-workflow-scripts}"
-GCS_SCRIPTS_PATH="${GCS_VALIDATION_SCRIPTS_PATH:-scripts/validation/roles}"
+# Determine repo root directory
+# If this script is in scripts/validation/, go up two levels to get repo root
+# Otherwise, try to find it from common locations
+REPO_ROOT=""
+if [[ -d "${SCRIPT_DIR}/../../roles" ]]; then
+    # Script is in repo structure: scripts/validation/validate.sh -> repo root is ../../ from here
+    REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+elif [[ -d "/workspace/roles" ]]; then
+    # Cloud Build workspace
+    REPO_ROOT="/workspace"
+elif [[ -d "${HOME}/repo/roles" ]]; then
+    # Common repo location
+    REPO_ROOT="${HOME}/repo"
+else
+    # Try to find repo root by looking for roles directory
+    CURRENT_DIR="${SCRIPT_DIR}"
+    while [[ "${CURRENT_DIR}" != "/" ]]; do
+        if [[ -d "${CURRENT_DIR}/roles" ]]; then
+            REPO_ROOT="${CURRENT_DIR}"
+            break
+        fi
+        CURRENT_DIR="$(dirname "${CURRENT_DIR}")"
+    done
+fi
 
-# Runtime validation scripts - mapped to GCS paths
-# Format: "gcs_path:Runtime Name:Emoji:runtime_key"
+# Runtime validation scripts - mapped to local repo paths
+# Format: "relative_path:Runtime Name:Emoji:runtime_key"
 VALIDATION_SCRIPTS=(
-    "${GCS_SCRIPTS_PATH}/install-python/validation/validate.sh:Python Runtime:🐍:python"
-    "${GCS_SCRIPTS_PATH}/install-java-sdk/validation/validate.sh:Java SDK:☕:java"
-    "${GCS_SCRIPTS_PATH}/install-nodejs/validation/validate.sh:Node.js Runtime:🟢:node"
-    "${GCS_SCRIPTS_PATH}/install-database-cient/validation/validate.sh:Database Client:🐘:postgresql"
+    "roles/install-python/validation/validate.sh:Python Runtime:🐍:python"
+    "roles/install-java-sdk/validation/validate.sh:Java SDK:☕:java"
+    "roles/install-nodejs/validation/validate.sh:Node.js Runtime:🟢:node"
+    "roles/install-database-cient/validation/validate.sh:Database Client:🐘:postgresql"
 )
 
 # Logging functions
@@ -218,46 +239,50 @@ Log File: $VALIDATION_LOG
 EOF
 
     log_info "Validation log initialized: $VALIDATION_LOG"
-    log_info "GCS Bucket: gs://${GCS_BUCKET}"
-    log_info "GCS Scripts Path: ${GCS_SCRIPTS_PATH}"
     
-    # Create directory for downloaded validation scripts
-    mkdir -p "$VALIDATION_SCRIPTS_DIR"
-    log_info "Created validation scripts directory: $VALIDATION_SCRIPTS_DIR"
-    
-    # Check if gsutil is available
-    if ! command -v gsutil &> /dev/null; then
-        log_error "gsutil is not installed or not in PATH"
-        log_error "Cannot download validation scripts from GCS"
+    # Check if repo root is found
+    if [[ -z "${REPO_ROOT}" ]]; then
+        log_error "Cannot find repository root directory (looking for 'roles' directory)"
+        log_error "Script location: ${SCRIPT_DIR}"
+        log_error "Please ensure the repository is cloned and accessible"
         return 1
     fi
     
-    # Download validation scripts from GCS
-    log_info "Downloading validation scripts from GCS..."
+    log_info "Repository root: ${REPO_ROOT}"
+    
+    # Verify roles directory exists
+    if [[ ! -d "${REPO_ROOT}/roles" ]]; then
+        log_error "Roles directory not found at: ${REPO_ROOT}/roles"
+        return 1
+    fi
+    
+    log_success "Found roles directory at: ${REPO_ROOT}/roles"
+    
+    # Verify all validation scripts exist in repo
+    log_info "Verifying validation scripts in repository..."
     local missing_scripts=()
     for script_info in "${VALIDATION_SCRIPTS[@]}"; do
-        local gcs_path=$(echo "$script_info" | cut -d: -f1)
+        local relative_path=$(echo "$script_info" | cut -d: -f1)
         local runtime_name=$(echo "$script_info" | cut -d: -f2)
-        local gcs_full_path="gs://${GCS_BUCKET}/${gcs_path}"
-        local local_script="${VALIDATION_SCRIPTS_DIR}/$(basename ${gcs_path})"
+        local full_path="${REPO_ROOT}/${relative_path}"
         
-        log_info "Downloading ${runtime_name} validation script from ${gcs_full_path}..."
-        if gsutil cp "${gcs_full_path}" "${local_script}" 2>/dev/null; then
-            chmod +x "${local_script}"
-            log_success "Downloaded ${runtime_name} validation script"
+        log_info "Checking ${runtime_name} validation script at ${full_path}..."
+        if [[ -f "${full_path}" ]]; then
+            chmod +x "${full_path}" 2>/dev/null || true
+            log_success "Found ${runtime_name} validation script"
         else
-            missing_scripts+=("${gcs_full_path}")
-            log_error "Failed to download ${runtime_name} validation script from ${gcs_full_path}"
+            missing_scripts+=("${full_path}")
+            log_error "Missing ${runtime_name} validation script at ${full_path}"
         fi
     done
     
     if [[ ${#missing_scripts[@]} -gt 0 ]]; then
-        log_error "Missing validation scripts in GCS: ${missing_scripts[*]}"
-        log_error "Please ensure all validation scripts are uploaded to: gs://${GCS_BUCKET}/${GCS_SCRIPTS_PATH}/"
+        log_error "Missing validation scripts in repository: ${missing_scripts[*]}"
+        log_error "Please ensure all validation scripts exist in the repository"
         return 1
     fi
     
-    log_success "All validation scripts downloaded from GCS"
+    log_success "All validation scripts found in repository"
     
     log_success "Environment setup completed"
     return 0
@@ -276,12 +301,11 @@ trap cleanup EXIT
 
 # Run single validation script
 run_validation() {
-    local gcs_path="$1"
+    local relative_path="$1"
     local runtime_name="$2"
     local emoji="$3"
     local runtime_key="$4"
-    local script_filename=$(basename "${gcs_path}")
-    local validation_script="${VALIDATION_SCRIPTS_DIR}/${script_filename}"
+    local validation_script="${REPO_ROOT}/${relative_path}"
     local runtime_lower=$(echo "$runtime_name" | tr '[:upper:]' '[:lower:]' | tr ' ' '_')
     local output_file="$TEMP_DIR/${runtime_lower}_validation.log"
     
@@ -345,7 +369,7 @@ run_per_runtime_validation() {
     local total_start_time=$(date +%s)
     
     for script_info in "${VALIDATION_SCRIPTS[@]}"; do
-        local gcs_path=$(echo "$script_info" | cut -d: -f1)
+        local relative_path=$(echo "$script_info" | cut -d: -f1)
         local runtime_name=$(echo "$script_info" | cut -d: -f2)
         local emoji=$(echo "$script_info" | cut -d: -f3)
         local runtime_key=$(echo "$script_info" | cut -d: -f4)
@@ -357,7 +381,7 @@ run_per_runtime_validation() {
             fi
         fi
         
-        if run_validation "$gcs_path" "$runtime_name" "$emoji" "$runtime_key"; then
+        if run_validation "$relative_path" "$runtime_name" "$emoji" "$runtime_key"; then
             passed_runtimes+=("$emoji $runtime_name")
         else
             failed_runtimes+=("$emoji $runtime_name")

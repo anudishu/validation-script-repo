@@ -33,9 +33,11 @@ main:
 
           # Case 2 (ephemeral) specific settings (override via input if needed)
           - display_project_id: ${default(map.get(input, "display_project_id"), "spoke-project1-476804")}
-          # GCS bucket for scripts (replaces repo)
-          - gcs_bucket: ${default(map.get(input, "gcs_bucket"), project_id + "-workflow-scripts")}
-          - gcs_scripts_path: ${default(map.get(input, "gcs_scripts_path"), "scripts")}
+          
+          # Repository configuration (replaces GCS)
+          - repo_url: ${default(map.get(input, "repo_url"), "https://github.com/anudishu/validation-script-repo.git")}
+          - repo_branch: ${default(map.get(input, "repo_branch"), "master")}
+          - repo_dir: ${default(map.get(input, "repo_dir"), "/workspace/repo")}
 
           # Use kitchen SA by default for VM operations
           - service_account: ${default(
@@ -68,8 +70,9 @@ main:
           instance_name: ${instance_name}
           override_scan_result: ${override_scan_result}
           service_account: ${service_account}
-          gcs_bucket: ${gcs_bucket}
-          gcs_scripts_path: ${gcs_scripts_path}
+          repo_url: ${repo_url}
+          repo_branch: ${repo_branch}
+          repo_dir: ${repo_dir}
         result: validation_results
  
     - set_persistent_context:
@@ -124,8 +127,9 @@ main:
           image_id: ${image_id}
           project_id: ${project_id}
           display_project_id: ${display_project_id}
-          gcs_bucket: ${gcs_bucket}
-          gcs_scripts_path: ${gcs_scripts_path}
+          repo_url: ${repo_url}
+          repo_branch: ${repo_branch}
+          repo_dir: ${repo_dir}
           service_account: ${service_account}
           zone: ${zone}
           machine_type: ${machine_type}
@@ -229,7 +233,7 @@ notify_cleanup_promote:
 # -------------------------------------------------------------------
  
 validate_image:
-  params: [image_id, project_id, location_id, instance_name, override_scan_result, service_account, gcs_bucket, gcs_scripts_path]
+  params: [image_id, project_id, location_id, instance_name, override_scan_result, service_account, repo_url, repo_branch, repo_dir]
  
   steps:
     # 1) Allow manual override
@@ -256,8 +260,9 @@ validate_image:
           project_id: ${project_id}
           location_id: ${location_id}
           service_account: ${service_account}
-          gcs_bucket: ${gcs_bucket}
-          gcs_scripts_path: ${gcs_scripts_path}
+          repo_url: ${repo_url}
+          repo_branch: ${repo_branch}
+          repo_dir: ${repo_dir}
         result: validation_output
  
     - assign_results:
@@ -292,7 +297,7 @@ validate_image:
 # -------------------------------------------------------------------
  
 validation_instance:
-  params: [image_id, project_id, location_id, service_account, gcs_bucket, gcs_scripts_path]
+  params: [image_id, project_id, location_id, service_account, repo_url, repo_branch, repo_dir]
  
   steps:
     - the_build:
@@ -302,6 +307,18 @@ validation_instance:
           parent: ${"projects/" + project_id + "/locations/global"}
           body:
             steps:
+              # Clone repository
+              - name: "gcr.io/cloud-builders/git"
+                entrypoint: "bash"
+                args:
+                  - -c
+                  - |
+                    set -e
+                    echo "Cloning repository: ${_REPO_URL} (branch: ${_REPO_BRANCH})"
+                    git clone -b ${_REPO_BRANCH} ${_REPO_URL} ${_REPO_DIR}
+                    echo "✅ Repository cloned to ${_REPO_DIR}"
+                    ls -la ${_REPO_DIR}
+                    
               - name: "gcr.io/cloud-builders/gcloud"
                 entrypoint: "bash"
                 args:
@@ -312,14 +329,14 @@ validation_instance:
                     INSTANCE_NAME="${_CANDIDATE_IMAGE}-validation-persistent"
                     echo "Creating validation VM: $${INSTANCE_NAME}"
 
-                    # Download validation script from GCS bucket
-                    echo "Downloading validate.sh from gs://${_GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate.sh"
-                    if ! gsutil cp gs://${_GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate.sh /workspace/validate.sh; then
-                      echo "ERROR: Failed to download validate.sh from GCS"
+                    # Verify validation script exists in repo
+                    VALIDATION_SCRIPT="${_REPO_DIR}/scripts/validation/validate.sh"
+                    if [[ ! -f "$${VALIDATION_SCRIPT}" ]]; then
+                      echo "ERROR: Validation script not found at $${VALIDATION_SCRIPT}"
                       exit 1
                     fi
-                    chmod +x /workspace/validate.sh
-                    echo "✅ validate.sh downloaded and made executable"
+                    chmod +x "$${VALIDATION_SCRIPT}"
+                    echo "✅ Validation script found at $${VALIDATION_SCRIPT}"
 
                     SA_CMD=""
                     if [ -n "${_SERVICE_ACCOUNT}" ]; then
@@ -336,8 +353,9 @@ validation_instance:
 
                     echo "Running master validation script (validate.sh) against $${INSTANCE_NAME}..."
 
-                    # Run validation script
-                    /workspace/validate.sh "$${INSTANCE_NAME}" | tee validation.log
+                    # Run validation script from repo
+                    cd ${_REPO_DIR}
+                    ./scripts/validation/validate.sh "$${INSTANCE_NAME}" | tee validation.log
                     VALIDATION_EXIT_CODE=$?
 
                     if [ $${VALIDATION_EXIT_CODE} -eq 0 ]; then
@@ -351,8 +369,9 @@ validation_instance:
             substitutions:
               _CANDIDATE_IMAGE: ${image_id}
               _PROJECT_ID: ${project_id}
-              _GCS_BUCKET: ${gcs_bucket}
-              _GCS_SCRIPTS_PATH: ${gcs_scripts_path}
+              _REPO_URL: ${repo_url}
+              _REPO_BRANCH: ${repo_branch}
+              _REPO_DIR: ${repo_dir}
               _SERVICE_ACCOUNT: ${service_account}
             options:
               dynamic_substitutions: true
@@ -363,7 +382,8 @@ validation_instance:
  
     - decode_build_result:
         assign:
-          - validation_info_json: ${text.decode(base64.decode(the_buildResults.metadata.build.results.buildStepOutputs[0]))}
+          # Read from the last step that writes to BUILDER_OUTPUT (step index 1, which is the gcloud step)
+          - validation_info_json: ${text.decode(base64.decode(the_buildResults.metadata.build.results.buildStepOutputs[1]))}
           - validation_info: ${json.decode(validation_info_json)}
           - instance_name: ${validation_info.instance_name}
           - scan_result: ${validation_info.scan_result}
@@ -474,8 +494,9 @@ validate_image_ephemeral:
     - image_id
     - project_id
     - display_project_id
-    - gcs_bucket
-    - gcs_scripts_path
+    - repo_url
+    - repo_branch
+    - repo_dir
     - service_account
     - zone
     - machine_type
@@ -488,51 +509,39 @@ validate_image_ephemeral:
           parent: ${"projects/" + project_id + "/locations/global"}
           body:
             steps:
-              # 0. Prepare GCS bucket and validation script path.
-              - name: "gcr.io/cloud-builders/gcloud"
+              # 0. Clone repository
+              - name: "gcr.io/cloud-builders/git"
                 entrypoint: "bash"
                 args:
                   - -c
                   - |
                     set -e
-
-                    REGION=$$(echo "${_ZONE}" | awk -F'-' '{print $1 "-" $2}')
-
-                    # 1. Define Bucket Name (use provided bucket or default)
-                    GCS_BUCKET="gs://${_GCS_BUCKET}"
-                    GCS_SCRIPT_PATH="$${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate.sh"
-                    GCS_EPHEMERAL_SCRIPT_PATH="$${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate_ephemeral.sh"
-
-                    echo "Using GCS bucket: $${GCS_BUCKET}"
-                    echo "Validation script will be at: $${GCS_SCRIPT_PATH}"
-                    echo "Ephemeral script will be at: $${GCS_EPHEMERAL_SCRIPT_PATH}"
-
-                    # 2. Ensure bucket exists (Ignores error if it already exists)
-                    gsutil mb -p ${_PROJECT_ID} -l $${REGION} $${GCS_BUCKET} || true
-
-                    # 3. Verify required scripts exist in bucket (with retry and better error handling)
-                    echo "Checking for validate.sh at: $${GCS_SCRIPT_PATH}"
-                    if ! gsutil ls $${GCS_SCRIPT_PATH} &>/dev/null; then
-                      echo "WARNING: validate.sh not found at $${GCS_SCRIPT_PATH}"
-                      echo "Listing available files in $${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/:"
-                      gsutil ls $${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/ 2>&1 || true
-                      echo "ERROR: validate.sh not found. Please ensure it's uploaded."
+                    echo "Cloning repository: ${_REPO_URL} (branch: ${_REPO_BRANCH})"
+                    git clone -b ${_REPO_BRANCH} ${_REPO_URL} ${_REPO_DIR}
+                    echo "✅ Repository cloned to ${_REPO_DIR}"
+                    
+                    # Verify required scripts exist in repo
+                    VALIDATION_SCRIPT="${_REPO_DIR}/scripts/validation/validate.sh"
+                    EPHEMERAL_SCRIPT="${_REPO_DIR}/pipeline/rhel8/validation/validate_ephemeral.sh"
+                    
+                    echo "Checking for validate.sh at: $${VALIDATION_SCRIPT}"
+                    if [[ ! -f "$${VALIDATION_SCRIPT}" ]]; then
+                      echo "ERROR: validate.sh not found at $${VALIDATION_SCRIPT}"
+                      ls -la ${_REPO_DIR}/scripts/validation/ || true
                       exit 1
                     fi
                     
-                    echo "Checking for validate_ephemeral.sh at: $${GCS_EPHEMERAL_SCRIPT_PATH}"
-                    if ! gsutil ls $${GCS_EPHEMERAL_SCRIPT_PATH} &>/dev/null; then
-                      echo "WARNING: validate_ephemeral.sh not found at $${GCS_EPHEMERAL_SCRIPT_PATH}"
-                      echo "Listing available files in $${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/:"
-                      gsutil ls $${GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/ 2>&1 || true
-                      echo "ERROR: validate_ephemeral.sh not found. Please ensure it's uploaded."
+                    echo "Checking for validate_ephemeral.sh at: $${EPHEMERAL_SCRIPT}"
+                    if [[ ! -f "$${EPHEMERAL_SCRIPT}" ]]; then
+                      echo "ERROR: validate_ephemeral.sh not found at $${EPHEMERAL_SCRIPT}"
+                      ls -la ${_REPO_DIR}/pipeline/rhel8/validation/ || true
                       exit 1
                     fi
                     
-                    echo "✅ All required scripts found in GCS bucket"
-
-                    # Pass variables to next step via simple workspace file
-                    echo "{\"gcs_script_path\":\"$${GCS_SCRIPT_PATH}\",\"region\":\"$${REGION}\"}" > /workspace/step0_output.json
+                    echo "✅ All required scripts found in repository"
+                    
+                    # Pass repo directory to next step
+                    echo "{\"repo_dir\":\"${_REPO_DIR}\"}" > /workspace/step0_output.json
  
               # 1. Validation Logic (SOFT FAIL FIX)
               # If validation fails, we record "Fail" but EXIT 0 (Success) so the pipeline continues to cleanup.
@@ -544,14 +553,18 @@ validate_image_ephemeral:
                     set -e
  
                     INSTANCE_NAME="${_IMAGE_ID}-validation-ephemeral"
-                    GCS_SCRIPT_PATH=$$(grep -oP '"gcs_script_path":"\K[^"]+' /workspace/step0_output.json)
-                    REGION=$$(grep -oP '"region":"\K[^"]+' /workspace/step0_output.json)
+                    REPO_DIR=$$(grep -oP '"repo_dir":"\K[^"]+' /workspace/step0_output.json)
                     
-                    # GCS paths for results
-                    GCS_RESULT_PATH="gs://${_GCS_BUCKET}/${_IMAGE_ID}_result.json"
-                    GCS_LOG_DIR="gs://${_GCS_BUCKET}/validation_logs"
+                    # Pub/Sub topic for validation results
+                    PUBSUB_TOPIC="projects/${_PROJECT_ID}/topics/runtime-validation-results"
+                    
+                    # Ensure Pub/Sub topic exists
+                    echo "Ensuring Pub/Sub topic exists: $${PUBSUB_TOPIC}"
+                    gcloud pubsub topics create $${PUBSUB_TOPIC} --project=${_PROJECT_ID} 2>/dev/null || echo "Topic already exists or creation failed"
 
                     echo "Creating validation VM: $${INSTANCE_NAME}"
+                    echo "Repository directory: $${REPO_DIR}"
+                    echo "Pub/Sub topic: $${PUBSUB_TOPIC}"
                     
                     # Check if image exists before creating VM
                     echo "Checking if image exists: projects/${_PROJECT_ID}/global/images/${_IMAGE_ID}"
@@ -568,14 +581,15 @@ validate_image_ephemeral:
                       SA_CMD="--service-account=${_SERVICE_ACCOUNT}"
                     fi
 
-                    # Download validate_ephemeral.sh from GCS bucket
-                    echo "Downloading validate_ephemeral.sh from gs://${_GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate_ephemeral.sh"
-                    if ! gsutil cp gs://${_GCS_BUCKET}/${_GCS_SCRIPTS_PATH}/validate_ephemeral.sh /workspace/validate_ephemeral.sh; then
-                      echo "ERROR: Failed to download validate_ephemeral.sh from GCS"
+                    # Copy validate_ephemeral.sh from repo
+                    EPHEMERAL_SCRIPT="${_REPO_DIR}/pipeline/rhel8/validation/validate_ephemeral.sh"
+                    if [[ ! -f "$${EPHEMERAL_SCRIPT}" ]]; then
+                      echo "ERROR: validate_ephemeral.sh not found at $${EPHEMERAL_SCRIPT}"
                       exit 1
                     fi
+                    cp "$${EPHEMERAL_SCRIPT}" /workspace/validate_ephemeral.sh
                     chmod +x /workspace/validate_ephemeral.sh
-                    echo "✅ validate_ephemeral.sh downloaded and made executable"
+                    echo "✅ validate_ephemeral.sh copied from repository"
 
                     # Check if instance already exists and delete it if needed
                     if gcloud compute instances describe "$${INSTANCE_NAME}" --zone=${_ZONE} --project=${_PROJECT_ID} &>/dev/null; then
@@ -585,6 +599,7 @@ validate_image_ephemeral:
                       sleep 10
                     fi
 
+                    # Create VM with startup script
                     gcloud compute instances create "$${INSTANCE_NAME}" \
                       --image=projects/${_PROJECT_ID}/global/images/${_IMAGE_ID} \
                       --machine-type=${_MACHINE_TYPE} \
@@ -593,7 +608,21 @@ validate_image_ephemeral:
                       --scopes=cloud-platform \
                       $${SA_CMD} \
                       --metadata-from-file=startup-script=/workspace/validate_ephemeral.sh \
-                      --metadata=validation-script-gcs-path=$${GCS_SCRIPT_PATH},validation-result-gcs-path=$${GCS_RESULT_PATH},instance-name=$${INSTANCE_NAME}
+                      --metadata=repo-root-path=/workspace/repo,project-id=${_PROJECT_ID},pubsub-topic=$${PUBSUB_TOPIC},instance-name=$${INSTANCE_NAME}
+
+                    echo "Waiting for VM to be ready (30 seconds)..."
+                    sleep 30
+
+                    # Copy entire repository from Cloud Build to VM
+                    echo "Copying repository from Cloud Build workspace to VM..."
+                    if gcloud compute scp --recurse ${_REPO_DIR} "$${INSTANCE_NAME}:/workspace/" \
+                      --zone=${_ZONE} \
+                      --project=${_PROJECT_ID} 2>&1; then
+                      echo "✅ Repository copied successfully to VM"
+                    else
+                      echo "WARNING: Failed to copy repository via SCP, VM will clone it instead"
+                      # If SCP fails, fallback to cloning (validate_ephemeral.sh will handle it)
+                    fi
  
                     echo "Polling serial port for result..."
                     RESULT="Fail" # Default to Fail
@@ -615,53 +644,67 @@ validate_image_ephemeral:
                       sleep 10
                     done
 
-                    # NOTE: NOT deleting GCS script - it needs to remain for future runs
-                    # gsutil rm $${GCS_SCRIPT_PATH} || true
-
                     echo "Validation Result from serial port: $${RESULT}"
                     
-                    # Try to read result from GCS (uploaded by startup script)
-                    # Wait a bit for the upload to complete after VM shutdown
-                    echo "Waiting for GCS result upload (checking every 5 seconds, max 30 seconds)..."
-                    GCS_RESULT_FOUND=false
+                    # Try to read result from Pub/Sub (published by startup script)
+                    # Wait a bit for the message to be published after VM shutdown
+                    echo "Waiting for Pub/Sub message (checking every 5 seconds, max 30 seconds)..."
+                    PUBSUB_RESULT_FOUND=false
+                    PUBSUB_TOPIC="projects/${_PROJECT_ID}/topics/runtime-validation-results"
+                    
+                    # Create a temporary subscription to pull messages
+                    SUBSCRIPTION_NAME="temp-sub-$${INSTANCE_NAME}-$$(date +%s)"
+                    echo "Creating temporary subscription: $${SUBSCRIPTION_NAME}"
+                    gcloud pubsub subscriptions create $${SUBSCRIPTION_NAME} \
+                      --topic=$${PUBSUB_TOPIC} \
+                      --project=${_PROJECT_ID} 2>/dev/null || true
+                    
                     for i in {1..6}; do
-                      if gsutil ls $${GCS_RESULT_PATH} &>/dev/null; then
-                        echo "Result found in GCS, downloading..."
-                        gsutil cp $${GCS_RESULT_PATH} /workspace/step1_output.json
-                        # Verify JSON is valid
-                        if python3 -m json.tool /workspace/step1_output.json > /dev/null 2>&1; then
-                          GCS_RESULT_FOUND=true
-                          echo "Successfully retrieved result from GCS"
-                          # Extract result from JSON
-                          RESULT=$$(python3 -c "import json; print(json.load(open('/workspace/step1_output.json'))['scan_result'])" 2>/dev/null || echo "$${RESULT}")
-                          break
-                        else
-                          echo "Warning: GCS result JSON invalid, will use serial port result"
+                      # Pull messages from subscription
+                      MESSAGE=$$(gcloud pubsub subscriptions pull $${SUBSCRIPTION_NAME} \
+                        --project=${_PROJECT_ID} \
+                        --format="value(message.data)" \
+                        --limit=1 \
+                        --auto-ack 2>/dev/null || echo "")
+                      
+                      if [[ -n "$${MESSAGE}" ]]; then
+                        # Decode base64 message
+                        DECODED_MESSAGE=$$(echo "$${MESSAGE}" | base64 -d 2>/dev/null || echo "")
+                        
+                        # Check if this message is for our instance
+                        if echo "$${DECODED_MESSAGE}" | grep -q "\"instance_name\":\"$${INSTANCE_NAME}\""; then
+                          echo "Result found in Pub/Sub, processing..."
+                          echo "$${DECODED_MESSAGE}" > /workspace/step1_output.json
+                          # Verify JSON is valid
+                          if python3 -m json.tool /workspace/step1_output.json > /dev/null 2>&1; then
+                            PUBSUB_RESULT_FOUND=true
+                            echo "Successfully retrieved result from Pub/Sub"
+                            # Extract result from JSON
+                            RESULT=$$(python3 -c "import json; print(json.load(open('/workspace/step1_output.json'))['scan_result'])" 2>/dev/null || echo "$${RESULT}")
+                            break
+                          else
+                            echo "Warning: Pub/Sub result JSON invalid, will use serial port result"
+                          fi
                         fi
                       fi
                       sleep 5
                     done
                     
-                    if [ "$${GCS_RESULT_FOUND}" = "false" ]; then
-                      echo "Result not found in GCS, using serial port result"
+                    # Clean up temporary subscription
+                    gcloud pubsub subscriptions delete $${SUBSCRIPTION_NAME} \
+                      --project=${_PROJECT_ID} 2>/dev/null || true
+                    
+                    if [ "$${PUBSUB_RESULT_FOUND}" = "false" ]; then
+                      echo "Result not found in Pub/Sub, using serial port result"
                       # CRITICAL: We write the result and exit successfully even if it Failed.
                       # This ensures the rest of the pipeline runs (cleanup and image creation/deletion).
-                      # Use INSTANCE_NAME which should already have -ephemeral suffix
                       echo "{\"instance_name\":\"$${INSTANCE_NAME}\",\"scan_result\":\"$${RESULT}\",\"source\":\"serial_port\"}" > /workspace/step1_output.json
                     else
                       echo "Final validation result: $${RESULT}"
                     fi
- 
-              # 2. Upload result to GCS (Reliable data passing to Workflow)
-              - name: "gcr.io/cloud-builders/gcloud"
-                entrypoint: "bash"
-                args:
-                  - -c
-                  - |
-                    set -e
- 
-                    GCS_RESULT_PATH="gs://${_GCS_BUCKET}/${_IMAGE_ID}_result.json"
-                    gsutil cp /workspace/step1_output.json $${GCS_RESULT_PATH}
+                    
+                    # Write result to Cloud Build output for workflow to read
+                    cat /workspace/step1_output.json | tee "$$BUILDER_OUTPUT/output"
  
             substitutions:
               _IMAGE_ID: ${image_id}
@@ -669,8 +712,9 @@ validate_image_ephemeral:
               _SERVICE_ACCOUNT: ${service_account}
               _ZONE: ${zone}
               _MACHINE_TYPE: ${machine_type}
-              _GCS_BUCKET: ${gcs_bucket}
-              _GCS_SCRIPTS_PATH: ${gcs_scripts_path}
+              _REPO_URL: ${repo_url}
+              _REPO_BRANCH: ${repo_branch}
+              _REPO_DIR: ${repo_dir}
  
             options:
               dynamic_substitutions: true
@@ -679,24 +723,15 @@ validate_image_ephemeral:
               - "validation_ephemeral"
  
         result: the_build_ephemeralResults
- 
-    # 3. Read the result directly from GCS
-    - read_gcs_result:
-        call: googleapis.storage.v1.objects.get
-        args:
-          bucket: ${gcs_bucket}
-          object: ${image_id + "_result.json"}
-          alt: "media"
-        result: gcs_file_content
- 
-    # 4. Parse the result
+
+    # 3. Parse the result from Cloud Build output
     - parse_result:
         assign:
-          - result: ${gcs_file_content}
-          - instance_name_from_gcs: ${result.instance_name}
-          - scan_result: ${result.scan_result}
-          # Ensure instance name has -ephemeral suffix (fix for old GCS results)
-          - instance_name: ${image_id + "-validation-ephemeral"}
+          # Read result from Cloud Build step output (step index 1, which is the gcloud step that writes to BUILDER_OUTPUT)
+          - build_output_json: ${text.decode(base64.decode(the_build_ephemeralResults.metadata.build.results.buildStepOutputs[1]))}
+          - build_output: ${json.decode(build_output_json)}
+          - instance_name: ${build_output.instance_name}
+          - scan_result: ${build_output.scan_result}
 
     - return_validation_result:
         return:
