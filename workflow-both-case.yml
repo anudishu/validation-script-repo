@@ -1,4 +1,13 @@
-#WORKFLOW CODE (COMBINED CASE1 CASE2)in this combined workflow since we were focusing to demo case 2 
+# ============================================================================
+# CONFIGURATION SECTION - UPDATE ALL VALUES BELOW BEFORE USING THIS WORKFLOW
+# ============================================================================
+#
+# IMPORTANT: Replace all placeholder values in the init step below with your actual values
+# Search for "CONFIGURATION PLACEHOLDERS" in the init step to find all values to update
+#
+# ============================================================================
+#
+# WORKFLOW CODE (COMBINED CASE1 CASE2)in this combined workflow since we were focusing to demo case 2 
 #I did not tested case 1 here but here under case 2 promote is not working while running this workflow in input use 
 #(this image id is nothing but the the image id which comes from sowmith build bake image)
 
@@ -15,8 +24,54 @@ main:
   steps:
     - init:
         assign:
-          # Common / Case 1 defaults
-          - project_id: sandbox-dev-478813
+          # ====================================================================
+          # CONFIGURATION PLACEHOLDERS - UPDATE THESE VALUES
+          # ====================================================================
+          # Replace all <<PLACEHOLDER>> values below with your actual values
+          # ====================================================================
+          
+          # Build Project ID (where VMs are created and validated)
+          # Replace <<BUILD_PROJECT_ID>> with your actual project ID
+          - project_id: ${default(map.get(input, "project_id"), "<<BUILD_PROJECT_ID>>")}
+          
+          # Display Project ID (where ephemeral images are promoted)
+          # Replace <<DISPLAY_PROJECT_ID>> with your actual display project ID
+          - display_project_id: ${default(map.get(input, "display_project_id"), "<<DISPLAY_PROJECT_ID>>")}
+          
+          # Service Account Email
+          # Replace <<SERVICE_ACCOUNT_EMAIL>> with your service account email
+          # Format: {service-account-name}@{project-id}.iam.gserviceaccount.com
+          - service_account: ${default(
+              map.get(input, "service_account"), "<<SERVICE_ACCOUNT_EMAIL>>")}
+          
+          # Repository URL (GitHub repository containing validation scripts)
+          # Replace <<REPO_URL>> with your repository URL
+          - repo_url: ${default(map.get(input, "repo_url"), "<<REPO_URL>>")}
+          
+          # Repository Branch
+          # Replace <<REPO_BRANCH>> with your repository branch (default: "master")
+          - repo_branch: ${default(map.get(input, "repo_branch"), "<<REPO_BRANCH>>")}
+          
+          # Zone (GCP zone for VM creation)
+          # Replace <<ZONE>> with your preferred zone (e.g., "us-central1-a")
+          - zone: ${default(map.get(input, "zone"), "<<ZONE>>")}
+          
+          # Machine Type (VM machine type)
+          # Replace <<MACHINE_TYPE>> with your preferred machine type (e.g., "n1-standard-1")
+          - machine_type: ${default(map.get(input, "machine_type"), "<<MACHINE_TYPE>>")}
+          
+          # Region (GCP region)
+          # Replace <<REGION>> with your preferred region (e.g., "us-central1")
+          - region: ${default(map.get(input, "region"), "<<REGION>>")}
+          
+          # Location ID (same as region typically)
+          # Replace <<LOCATION_ID>> with your location ID
+          - location_id: ${default(map.get(input, "location_id"), "<<LOCATION_ID>>")}
+          
+          # ====================================================================
+          # END OF CONFIGURATION PLACEHOLDERS
+          # ====================================================================
+          
           # image_id must be the image NAME, e.g. "schwab-rhel9-persistent-1764702301"
           - image_id: ${default(map.get(input, "image_id"), "")}
           - instance_name: ${default(map.get(input, "instance_name"), "")}
@@ -25,26 +80,12 @@ main:
           - skip_promotion: ${default(map.get(input, "skip_promotion"), false)}
           - delete_image: ${default(map.get(input, "delete_image"), false)}
           - project_number: ${default(map.get(input, "project_number"), sys.get_env("GOOGLE_CLOUD_PROJECT_NUMBER"))}
-          - region: ${default(map.get(input, "region"), "us-central1")}
-          - location_id: ${default(map.get(input, "location_id"), "us-central1")}
 
           # Case switch: persistent or ephemeral
           - server_type: ${default(map.get(input, "server_type"), "persistent")}
-
-          # Case 2 (ephemeral) specific settings (override via input if needed)
-          - display_project_id: ${default(map.get(input, "display_project_id"), "spoke-project1-476804")}
           
-          # Repository configuration (replaces GCS)
-          - repo_url: ${default(map.get(input, "repo_url"), "https://github.com/anudishu/validation-script-repo.git")}
-          - repo_branch: ${default(map.get(input, "repo_branch"), "master")}
+          # Repository directory (typically doesn't need to be changed)
           - repo_dir: ${default(map.get(input, "repo_dir"), "/workspace/repo")}
-
-          # Use kitchen SA by default for VM operations
-          - service_account: ${default(
-              map.get(input, "service_account"), "sa-kitchen-sh@sandbox-dev-478813.iam.gserviceaccount.com")}
- 
-          - zone: ${default(map.get(input, "zone"), "us-central1-a")}
-          - machine_type: ${default(map.get(input, "machine_type"), "n1-standard-1")}
  
     # Decide which case to run:
     #   - persistent  → Case 1 flow only
@@ -73,6 +114,8 @@ main:
           repo_url: ${repo_url}
           repo_branch: ${repo_branch}
           repo_dir: ${repo_dir}
+          zone: ${zone}
+          machine_type: ${machine_type}
         result: validation_results
  
     - set_persistent_context:
@@ -113,6 +156,7 @@ main:
           skip_destroy: ${skip_destroy}
           delete_image: ${delete_image}
           scan_result: ${validation_scan_result}
+          zone: ${zone}
         result: cleanup_results
         next: return_result
  
@@ -207,12 +251,13 @@ main:
  
 notify_cleanup_promote:
   params: [project_id, image_id, scan_result, validation_instance, skip_destroy, skip_promotion]
- 
+
   steps:
     - publish_message:
         call: googleapis.pubsub.v1.projects.topics.publish
         args:
-          topic: ${"projects/" + project_id + "/topics/runtime-workflow-promote-topic"}
+          # CONFIGURATION: Replace <<PUBSUB_TOPIC_NAME>> with your Pub/Sub topic name
+          topic: ${"projects/" + project_id + "/topics/<<PUBSUB_TOPIC_NAME>>"}
           body:
             messages:
               - attributes:
@@ -233,7 +278,7 @@ notify_cleanup_promote:
 # -------------------------------------------------------------------
  
 validate_image:
-  params: [image_id, project_id, location_id, instance_name, override_scan_result, service_account, repo_url, repo_branch, repo_dir]
+  params: [image_id, project_id, location_id, instance_name, override_scan_result, service_account, repo_url, repo_branch, repo_dir, zone, machine_type]
  
   steps:
     # 1) Allow manual override
@@ -263,6 +308,8 @@ validate_image:
           repo_url: ${repo_url}
           repo_branch: ${repo_branch}
           repo_dir: ${repo_dir}
+          zone: ${zone}
+          machine_type: ${machine_type}
         result: validation_output
  
     - assign_results:
@@ -297,7 +344,7 @@ validate_image:
 # -------------------------------------------------------------------
  
 validation_instance:
-  params: [image_id, project_id, location_id, service_account, repo_url, repo_branch, repo_dir]
+  params: [image_id, project_id, location_id, service_account, repo_url, repo_branch, repo_dir, zone, machine_type]
  
   steps:
     - the_build:
@@ -343,10 +390,11 @@ validation_instance:
                       SA_CMD="--service-account=${_SERVICE_ACCOUNT}"
                     fi
 
+                    # CONFIGURATION: Zone and machine type are passed via substitutions
                     gcloud compute instances create "$${INSTANCE_NAME}" \
                       --image=projects/${_PROJECT_ID}/global/images/${_CANDIDATE_IMAGE} \
-                      --machine-type=n1-standard-1 \
-                      --zone=us-central1-a \
+                      --machine-type=${_MACHINE_TYPE} \
+                      --zone=${_ZONE} \
                       --project=${_PROJECT_ID} \
                       --scopes=cloud-platform \
                       $${SA_CMD}
@@ -373,6 +421,8 @@ validation_instance:
               _REPO_BRANCH: ${repo_branch}
               _REPO_DIR: ${repo_dir}
               _SERVICE_ACCOUNT: ${service_account}
+              _ZONE: ${zone}
+              _MACHINE_TYPE: ${machine_type}
             options:
               dynamic_substitutions: true
             tags:
@@ -408,7 +458,7 @@ validation_instance:
 # -------------------------------------------------------------------
  
 cleanup_artifacts:
-  params: [image_id, project_id, location_id, instance_name, skip_destroy, delete_image, scan_result]
+  params: [image_id, project_id, location_id, instance_name, skip_destroy, delete_image, scan_result, zone]
  
   steps:
     - skip_instance_creation:
@@ -428,11 +478,13 @@ cleanup_artifacts:
                 args:
                   - -c
                   - |
-                    gcloud compute instances stop ${_INSTANCE_NAME} --zone us-central1-a --project=${_PROJECT_ID}
-                    gcloud compute instances delete ${_INSTANCE_NAME} --zone us-central1-a --project=${_PROJECT_ID} --quiet
+                    # CONFIGURATION: Zone is passed via substitution
+                    gcloud compute instances stop ${_INSTANCE_NAME} --zone ${_ZONE} --project=${_PROJECT_ID}
+                    gcloud compute instances delete ${_INSTANCE_NAME} --zone ${_ZONE} --project=${_PROJECT_ID} --quiet
             substitutions:
               _INSTANCE_NAME: ${instance_name}
               _PROJECT_ID: ${project_id}
+              _ZONE: ${zone}
             options:
               dynamic_substitutions: true
             tags:
@@ -555,8 +607,9 @@ validate_image_ephemeral:
                     INSTANCE_NAME="${_IMAGE_ID}-validation-ephemeral"
                     REPO_DIR=$$(grep -oP '"repo_dir":"\K[^"]+' /workspace/step0_output.json)
                     
+                    # CONFIGURATION: Replace <<PUBSUB_VALIDATION_TOPIC_NAME>> with your Pub/Sub topic name
                     # Pub/Sub topic for validation results
-                    PUBSUB_TOPIC="projects/${_PROJECT_ID}/topics/runtime-validation-results"
+                    PUBSUB_TOPIC="projects/${_PROJECT_ID}/topics/<<PUBSUB_VALIDATION_TOPIC_NAME>>"
                     
                     # Ensure Pub/Sub topic exists
                     echo "Ensuring Pub/Sub topic exists: $${PUBSUB_TOPIC}"
@@ -650,7 +703,8 @@ validate_image_ephemeral:
                     # Wait a bit for the message to be published after VM shutdown
                     echo "Waiting for Pub/Sub message (checking every 5 seconds, max 30 seconds)..."
                     PUBSUB_RESULT_FOUND=false
-                    PUBSUB_TOPIC="projects/${_PROJECT_ID}/topics/runtime-validation-results"
+                    # CONFIGURATION: Replace <<PUBSUB_VALIDATION_TOPIC_NAME>> with your Pub/Sub topic name
+                    PUBSUB_TOPIC="projects/${_PROJECT_ID}/topics/<<PUBSUB_VALIDATION_TOPIC_NAME>>"
                     
                     # Create a temporary subscription to pull messages
                     SUBSCRIPTION_NAME="temp-sub-$${INSTANCE_NAME}-$$(date +%s)"

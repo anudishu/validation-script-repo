@@ -2,37 +2,63 @@
 
 This guide lists all placeholders and values that need to be changed before using this workflow.
 
-## 📋 Required Changes
+## 📋 Quick Start - Configuration Placeholders
+
+**IMPORTANT:** All configuration values are now clearly marked with placeholders in the format `<<PLACEHOLDER_NAME>>` at the beginning of the `workflow-both-case.yml` file.
+
+### Where to Find Placeholders
+
+Open `workflow-both-case.yml` and look for the **"CONFIGURATION PLACEHOLDERS"** section in the `init` step (around line 30-70). All placeholders are clearly marked and documented.
+
+### Required Changes
+
+All placeholders are located in the `init` step of the workflow. Search for `<<PLACEHOLDER_NAME>>` and replace with your actual values:
+
+1. **<<BUILD_PROJECT_ID>>** - Your build project ID (where VMs are created and validated)
+2. **<<DISPLAY_PROJECT_ID>>** - Your display project ID (where ephemeral images are promoted)
+3. **<<SERVICE_ACCOUNT_EMAIL>>** - Your service account email
+4. **<<REPO_URL>>** - Your GitHub repository URL containing validation scripts
+5. **<<REPO_BRANCH>>** - Your repository branch (default: "master")
+6. **<<ZONE>>** - Your GCP zone (e.g., "us-central1-a")
+7. **<<MACHINE_TYPE>>** - Your VM machine type (e.g., "n1-standard-1")
+8. **<<REGION>>** - Your GCP region (e.g., "us-central1")
+9. **<<LOCATION_ID>>** - Your location ID (typically same as region)
+10. **<<PUBSUB_TOPIC_NAME>>** - Your Pub/Sub topic name for promotion notifications
+11. **<<PUBSUB_VALIDATION_TOPIC_NAME>>** - Your Pub/Sub topic name for validation results
+
+---
+
+## 📋 Detailed Configuration Guide
 
 ### 1. Project IDs
 
-**Location:** `workflow-both-case.yml` - Line ~22-34
-
-**Current Values:**
-```yaml
-- project_id: ${default(map.get(input, "project_id"), "sandbox-dev-478813")}
-- display_project_id: ${default(map.get(input, "display_project_id"), "spoke-project1-476804")}
-```
+**Location:** `workflow-both-case.yml` - `init` step, look for `<<BUILD_PROJECT_ID>>` and `<<DISPLAY_PROJECT_ID>>`
 
 **Action Required:**
-- Replace `sandbox-dev-478813` with your **build project ID** (where VMs are created and validated)
-- Replace `spoke-project1-476804` with your **display project ID** (where ephemeral images are promoted)
+- Replace `<<BUILD_PROJECT_ID>>` with your **build project ID** (where VMs are created and validated)
+- Replace `<<DISPLAY_PROJECT_ID>>` with your **display project ID** (where ephemeral images are promoted)
+
+**Example:**
+```yaml
+- project_id: ${default(map.get(input, "project_id"), "my-build-project-123456")}
+- display_project_id: ${default(map.get(input, "display_project_id"), "my-display-project-789012")}
+```
 
 ---
 
 ### 2. Service Account
 
-**Location:** `workflow-both-case.yml` - Line ~40-41
-
-**Current Value:**
-```yaml
-- service_account: ${default(
-    map.get(input, "service_account"), "sa-kitchen-sh@sandbox-dev-478813.iam.gserviceaccount.com")}
-```
+**Location:** `workflow-both-case.yml` - `init` step, look for `<<SERVICE_ACCOUNT_EMAIL>>`
 
 **Action Required:**
-- Replace `sa-kitchen-sh@sandbox-dev-478813.iam.gserviceaccount.com` with your service account email
+- Replace `<<SERVICE_ACCOUNT_EMAIL>>` with your service account email
 - Format: `{service-account-name}@{project-id}.iam.gserviceaccount.com`
+
+**Example:**
+```yaml
+- service_account: ${default(
+    map.get(input, "service_account"), "my-sa@my-project-123456.iam.gserviceaccount.com")}
+```
 
 **Service Account Permissions Required:**
 
@@ -55,74 +81,83 @@ gcloud projects add-iam-policy-binding {DISPLAY_PROJECT_ID} \
 
 ---
 
-### 3. GCS Bucket Configuration
+### 3. Repository Configuration
 
-**Location:** `workflow-both-case.yml` - Line ~36-37
-
-**Current Values:**
-```yaml
-- gcs_bucket: ${default(map.get(input, "gcs_bucket"), project_id + "-workflow-scripts")}
-- gcs_scripts_path: ${default(map.get(input, "gcs_scripts_path"), "scripts")}
-```
+**Location:** `workflow-both-case.yml` - `init` step, look for `<<REPO_URL>>` and `<<REPO_BRANCH>>`
 
 **Action Required:**
-- **Option 1:** Keep default - bucket name will be `{project_id}-workflow-scripts` (e.g., `sandbox-dev-478813-workflow-scripts`)
-- **Option 2:** Change to your existing bucket name
+- Replace `<<REPO_URL>>` with your GitHub repository URL containing validation scripts
+- Replace `<<REPO_BRANCH>>` with your repository branch (default: "master")
 
-**GCS Bucket Structure Required:**
+**Repository Structure Required:**
 ```
-gs://{BUCKET_NAME}/
-  └── scripts/
-      ├── validate.sh
-      └── validate_ephemeral.sh
+your-repo/
+  ├── scripts/
+  │   └── validation/
+  │       └── validate.sh
+  └── pipeline/
+      └── rhel8/
+          └── validation/
+              └── validate_ephemeral.sh
 ```
 
-**Upload Scripts to GCS:**
-```bash
-# Set variables
-BUCKET="your-project-id-workflow-scripts"
-PROJECT_ID="your-project-id"
-
-# Create bucket (if doesn't exist)
-gsutil mb -p ${PROJECT_ID} -l us-central1 gs://${BUCKET} || true
-
-# Upload scripts
-gsutil cp scripts/validation/validate.sh gs://${BUCKET}/scripts/validate.sh
-gsutil cp pipeline/rhel8/validation/validate_ephemeral.sh gs://${BUCKET}/scripts/validate_ephemeral.sh
+**Example:**
+```yaml
+- repo_url: ${default(map.get(input, "repo_url"), "https://github.com/your-org/validation-script-repo.git")}
+- repo_branch: ${default(map.get(input, "repo_branch"), "master")}
 ```
 
 ---
 
 ### 4. Zone and Machine Type
 
-**Location:** `workflow-both-case.yml` - Line ~43-44
+**Location:** `workflow-both-case.yml` - `init` step, look for `<<ZONE>>` and `<<MACHINE_TYPE>>`
 
-**Current Values:**
+**Action Required:**
+- Replace `<<ZONE>>` with your preferred zone (e.g., "us-central1-a", "us-east1-b")
+- Replace `<<MACHINE_TYPE>>` with your preferred machine type (e.g., "n1-standard-1", "n1-standard-2", "e2-medium")
+
+**Example:**
 ```yaml
 - zone: ${default(map.get(input, "zone"), "us-central1-a")}
 - machine_type: ${default(map.get(input, "machine_type"), "n1-standard-1")}
 ```
 
+---
+
+### 5. Region and Location ID
+
+**Location:** `workflow-both-case.yml` - `init` step, look for `<<REGION>>` and `<<LOCATION_ID>>`
+
 **Action Required:**
-- Change `us-central1-a` to your preferred zone
-- Change `n1-standard-1` to your preferred machine type
+- Replace `<<REGION>>` with your preferred region (e.g., "us-central1", "us-east1")
+- Replace `<<LOCATION_ID>>` with your location ID (typically same as region)
+
+**Example:**
+```yaml
+- region: ${default(map.get(input, "region"), "us-central1")}
+- location_id: ${default(map.get(input, "location_id"), "us-central1")}
+```
 
 ---
 
-### 5. Pub/Sub Topic
+### 6. Pub/Sub Topics
 
-**Location:** `workflow-both-case.yml` - Line ~209
-
-**Current Value:**
-```yaml
-topic: ${"projects/" + project_id + "/topics/runtime-workflow-promote-topic"}
-```
+**Location:** `workflow-both-case.yml` - Look for `<<PUBSUB_TOPIC_NAME>>` and `<<PUBSUB_VALIDATION_TOPIC_NAME>>`
 
 **Action Required:**
-- Create Pub/Sub topic if it doesn't exist:
+- Replace `<<PUBSUB_TOPIC_NAME>>` with your Pub/Sub topic name for promotion notifications
+- Replace `<<PUBSUB_VALIDATION_TOPIC_NAME>>` with your Pub/Sub topic name for validation results
+
+**Create Pub/Sub Topics:**
 ```bash
-gcloud pubsub topics create runtime-workflow-promote-topic \
-  --project={PROJECT_ID}
+# Promotion topic
+gcloud pubsub topics create <<PUBSUB_TOPIC_NAME>> \
+  --project={BUILD_PROJECT_ID}
+
+# Validation results topic
+gcloud pubsub topics create <<PUBSUB_VALIDATION_TOPIC_NAME>> \
+  --project={BUILD_PROJECT_ID}
 ```
 
 ---
@@ -141,31 +176,43 @@ gcloud workflows deploy runtime-validation-workflow \
 
 ## 🔧 Configuration Summary
 
-| Item | Current Value | Your Value |
-|------|--------------|------------|
-| **Build Project ID** | `sandbox-dev-478813` | `_____________` |
-| **Display Project ID** | `spoke-project1-476804` | `_____________` |
-| **Service Account** | `sa-kitchen-sh@sandbox-dev-478813.iam.gserviceaccount.com` | `_____________` |
-| **GCS Bucket** | `{project_id}-workflow-scripts` | `_____________` |
-| **Zone** | `us-central1-a` | `_____________` |
-| **Machine Type** | `n1-standard-1` | `_____________` |
-| **Pub/Sub Topic** | `runtime-workflow-promote-topic` | `_____________` |
+| Placeholder | Description | Your Value |
+|------------|-------------|------------|
+| **<<BUILD_PROJECT_ID>>** | Build project ID (where VMs are created) | `_____________` |
+| **<<DISPLAY_PROJECT_ID>>** | Display project ID (where images are promoted) | `_____________` |
+| **<<SERVICE_ACCOUNT_EMAIL>>** | Service account email | `_____________` |
+| **<<REPO_URL>>** | GitHub repository URL | `_____________` |
+| **<<REPO_BRANCH>>** | Repository branch | `_____________` |
+| **<<ZONE>>** | GCP zone | `_____________` |
+| **<<MACHINE_TYPE>>** | VM machine type | `_____________` |
+| **<<REGION>>** | GCP region | `_____________` |
+| **<<LOCATION_ID>>** | Location ID | `_____________` |
+| **<<PUBSUB_TOPIC_NAME>>** | Pub/Sub topic for promotions | `_____________` |
+| **<<PUBSUB_VALIDATION_TOPIC_NAME>>** | Pub/Sub topic for validation results | `_____________` |
 
 ---
 
 ## 📝 Quick Setup Checklist
 
-- [ ] Update build project ID
-- [ ] Update display project ID  
-- [ ] Update service account email
-- [ ] Create/verify GCS bucket exists
-- [ ] Upload `validate.sh` to `gs://{BUCKET}/scripts/validate.sh`
-- [ ] Upload `validate_ephemeral.sh` to `gs://{BUCKET}/scripts/validate_ephemeral.sh`
-- [ ] Grant service account `compute.imageUser` role in display project
-- [ ] Create Pub/Sub topic (if using notifications)
-- [ ] Update zone (if different)
-- [ ] Update machine type (if different)
-- [ ] Deploy workflow
+1. **Open `workflow-both-case.yml`** and find the `init` step
+2. **Search for "CONFIGURATION PLACEHOLDERS"** section
+3. **Replace all `<<PLACEHOLDER_NAME>>` values** with your actual values:
+   - [ ] Replace `<<BUILD_PROJECT_ID>>` with your build project ID
+   - [ ] Replace `<<DISPLAY_PROJECT_ID>>` with your display project ID
+   - [ ] Replace `<<SERVICE_ACCOUNT_EMAIL>>` with your service account email
+   - [ ] Replace `<<REPO_URL>>` with your repository URL
+   - [ ] Replace `<<REPO_BRANCH>>` with your repository branch
+   - [ ] Replace `<<ZONE>>` with your preferred zone
+   - [ ] Replace `<<MACHINE_TYPE>>` with your preferred machine type
+   - [ ] Replace `<<REGION>>` with your preferred region
+   - [ ] Replace `<<LOCATION_ID>>` with your location ID
+   - [ ] Replace `<<PUBSUB_TOPIC_NAME>>` with your Pub/Sub topic name
+   - [ ] Replace `<<PUBSUB_VALIDATION_TOPIC_NAME>>` with your validation topic name
+4. **Additional Setup:**
+   - [ ] Grant service account `compute.imageUser` role in display project
+   - [ ] Create Pub/Sub topics (if they don't exist)
+   - [ ] Ensure repository contains required validation scripts
+   - [ ] Deploy workflow
 
 ---
 
