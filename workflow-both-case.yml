@@ -32,41 +32,41 @@ main:
           
           # Build Project ID (where VMs are created and validated)
           # Replace <<BUILD_PROJECT_ID>> with your actual project ID
-          - project_id: ${default(map.get(input, "project_id"), "<<BUILD_PROJECT_ID>>")}
+          - project_id: ${default(map.get(input, "project_id"), "sandbox-dev-478813")}
           
           # Display Project ID (where ephemeral images are promoted)
           # Replace <<DISPLAY_PROJECT_ID>> with your actual display project ID
-          - display_project_id: ${default(map.get(input, "display_project_id"), "<<DISPLAY_PROJECT_ID>>")}
+          - display_project_id: ${default(map.get(input, "display_project_id"), "spoke-project1-476804")}
           
           # Service Account Email
           # Replace <<SERVICE_ACCOUNT_EMAIL>> with your service account email
           # Format: {service-account-name}@{project-id}.iam.gserviceaccount.com
           - service_account: ${default(
-              map.get(input, "service_account"), "<<SERVICE_ACCOUNT_EMAIL>>")}
+              map.get(input, "service_account"), "sa-kitchen-sh@sandbox-dev-478813.iam.gserviceaccount.com")}
           
           # Repository URL (GitHub repository containing validation scripts)
           # Replace <<REPO_URL>> with your repository URL
-          - repo_url: ${default(map.get(input, "repo_url"), "<<REPO_URL>>")}
+          - repo_url: ${default(map.get(input, "repo_url"), "https://github.com/anudishu/validation-script-repo.git")}
           
           # Repository Branch
           # Replace <<REPO_BRANCH>> with your repository branch (default: "master")
-          - repo_branch: ${default(map.get(input, "repo_branch"), "<<REPO_BRANCH>>")}
+          - repo_branch: ${default(map.get(input, "repo_branch"), "master")}
           
           # Zone (GCP zone for VM creation)
           # Replace <<ZONE>> with your preferred zone (e.g., "us-central1-a")
-          - zone: ${default(map.get(input, "zone"), "<<ZONE>>")}
+          - zone: ${default(map.get(input, "zone"), "us-central1-a")}
           
           # Machine Type (VM machine type)
           # Replace <<MACHINE_TYPE>> with your preferred machine type (e.g., "n1-standard-1")
-          - machine_type: ${default(map.get(input, "machine_type"), "<<MACHINE_TYPE>>")}
+          - machine_type: ${default(map.get(input, "machine_type"), "n1-standard-1")}
           
           # Region (GCP region)
           # Replace <<REGION>> with your preferred region (e.g., "us-central1")
-          - region: ${default(map.get(input, "region"), "<<REGION>>")}
+          - region: ${default(map.get(input, "region"), "us-central1")}
           
           # Location ID (same as region typically)
           # Replace <<LOCATION_ID>> with your location ID
-          - location_id: ${default(map.get(input, "location_id"), "<<LOCATION_ID>>")}
+          - location_id: ${default(map.get(input, "location_id"), "us-central1")}
           
           # ====================================================================
           # END OF CONFIGURATION PLACEHOLDERS
@@ -257,7 +257,7 @@ notify_cleanup_promote:
         call: googleapis.pubsub.v1.projects.topics.publish
         args:
           # CONFIGURATION: Replace <<PUBSUB_TOPIC_NAME>> with your Pub/Sub topic name
-          topic: ${"projects/" + project_id + "/topics/<<PUBSUB_TOPIC_NAME>>"}
+          topic: ${"projects/" + project_id + "/topics/runtime-workflow-promote-topic"}
           body:
             messages:
               - attributes:
@@ -609,7 +609,7 @@ validate_image_ephemeral:
                     
                     # CONFIGURATION: Replace <<PUBSUB_VALIDATION_TOPIC_NAME>> with your Pub/Sub topic name
                     # Pub/Sub topic for validation results
-                    PUBSUB_TOPIC="projects/${_PROJECT_ID}/topics/<<PUBSUB_VALIDATION_TOPIC_NAME>>"
+                    PUBSUB_TOPIC="projects/${_PROJECT_ID}/topics/runtime-validation-results"
                     
                     # Ensure Pub/Sub topic exists
                     echo "Ensuring Pub/Sub topic exists: $${PUBSUB_TOPIC}"
