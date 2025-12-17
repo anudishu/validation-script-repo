@@ -608,7 +608,7 @@ validate_image_ephemeral:
                       --scopes=cloud-platform \
                       $${SA_CMD} \
                       --metadata-from-file=startup-script=/workspace/validate_ephemeral.sh \
-                      --metadata=repo-root-path=/workspace/repo,project-id=${_PROJECT_ID},pubsub-topic=$${PUBSUB_TOPIC},instance-name=$${INSTANCE_NAME}
+                      --metadata=repo-root-path=/workspace/repo,repo-url=${_REPO_URL},repo-branch=${_REPO_BRANCH},project-id=${_PROJECT_ID},pubsub-topic=$${PUBSUB_TOPIC},instance-name=$${INSTANCE_NAME}
 
                     echo "Waiting for VM to be ready (30 seconds)..."
                     sleep 30

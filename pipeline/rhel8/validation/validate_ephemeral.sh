@@ -70,8 +70,20 @@ REPO_ROOT=$(curl -s "http://metadata.google.internal/computeMetadata/v1/instance
 log "Repository root path: ${REPO_ROOT}"
  
 # Check if repository already exists (copied from Cloud Build via SCP)
-if [[ -d "${REPO_ROOT}/.git" ]] || [[ -f "${REPO_ROOT}/scripts/validation/validate.sh" ]]; then
-  log "✅ Repository already exists at ${REPO_ROOT} (copied from Cloud Build)"
+# Check multiple possible locations and conditions
+REPO_EXISTS=false
+if [[ -d "${REPO_ROOT}/.git" ]]; then
+  REPO_EXISTS=true
+  log "✅ Repository found at ${REPO_ROOT} (has .git directory)"
+elif [[ -f "${REPO_ROOT}/scripts/validation/validate.sh" ]]; then
+  REPO_EXISTS=true
+  log "✅ Repository found at ${REPO_ROOT} (validate.sh exists)"
+elif [[ -d "${REPO_ROOT}/roles" ]]; then
+  REPO_EXISTS=true
+  log "✅ Repository found at ${REPO_ROOT} (roles directory exists)"
+fi
+
+if [ "$REPO_EXISTS" = true ]; then
   log "Skipping clone - using existing repository"
 else
   # Fallback: Clone repository if it wasn't copied from Cloud Build
