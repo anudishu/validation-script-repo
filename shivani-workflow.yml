@@ -5,27 +5,19 @@ main:
   steps:
 
     - decode_pubsub_message:
-
         assign:
 
           # Pull the base64 string from Pub/Sub message
 
           - payload_b64: ${event.data.message.data}
-
           # Decode base64 to text JSON
 
           - payload_json: ${text.decode(base64.decode(payload_b64))}
-
- 
-
           # Parse JSON to object
 
           - payload: ${json.decode(payload_json)}
 
           - input: ${payload}
-
- 
-
           # Map into existing variables that init expects
 
           - project_id: ${payload.project_id}
@@ -38,10 +30,8 @@ main:
 
           - os_family: ${payload.os_family}
 
-   
 
     - log_raw_event:
-
         call: sys.log
 
         args:
@@ -50,10 +40,8 @@ main:
 
           severity: "INFO"
 
- 
 
     - log_decode_payload:
-
         call: sys.log
 
         args:
@@ -62,14 +50,11 @@ main:
 
           severity: "INFO"
 
- 
 
     - log_mapped_values:
-
         assign:
 
           - mapped_values_text: ${"MAPPED VALUES project_id=" + json.encode_to_string(project_id) + " location_id=" + json.encode_to_string(location_id) + " image_id=" + json.encode_to_string(image_id) + " server_type=" + json.encode_to_string(server_type) + " os_family=" + json.encode_to_string(os_family)}
-
         call: sys.log
 
         args:
@@ -78,15 +63,12 @@ main:
 
           severity: "INFO"
 
- 
 
     - init:
-
         assign:
 
           # Common / Case 1 defaults
 
- 
 
           - instance_name: ${default(map.get(input, "instance_name"), "")}
 
@@ -102,14 +84,10 @@ main:
 
           - zone: ${default(map.get(input, "zone"), "us-central1-a")}
 
- 
 
           - logs_mode: ${default(map.get(input, "logs_mode"), "CLOUD_LOGGING_ONLY")}
 
           - os_family: ${map.get(input, "os_family")}
-
- 
-
           # Case 2 (ephemeral) specific settings (override via input if needed)
 
           - display_project_id: ${default(map.get(input, "display_project_id"), "cs-sh-img-display-case1025")}
@@ -117,46 +95,31 @@ main:
           - repo_name: ${default(map.get(input, "repo_name"), "gcp-ansible-playbooks")}
 
           - repo_branch: ${default(map.get(input, "repo_branch"), "master")}
-
           # repo_dir not used for Case 2 (we use repo root for startup-script)
 
           - repo_dir: ${default(map.get(input, "repo_dir"), "")}
-
- 
-
           # Use kitchen SA by default for VM (new default)
 
-          - service_account: ${default(
+          - service_account: ${default(map.get(input, "service_account"), "sa-kitchen-sh@cs-sh-image-bakery1748.iam.gserviceaccount.com")}
 
-              map.get(input, "service_account"), "sa-kitchen-sh@cs-sh-image-bakery1748.iam.gserviceaccount.com")}
-
- 
 
           - machine_type: ${default(map.get(input, "machine_type"), "n1-standard-1")}
 
           - subnet_name: ${default(map.get(input, "subnet_name"), "imgbake-bakery-usc1")}
 
           - new_image_id: "not_applicable"
-
- 
-
     # Decide which case to run:
-
     #   - persistent  → Case 1 flow
-
     #   - ephemeral   → Case 2 flow
 
     - route_server_type:
-
         switch:
 
           - condition: ${text.to_lower(server_type) == "ephemeral"}
-
             next: validation_ephemeral
 
         next: validation_persistent
 
- 
 
     # =========================
 
@@ -164,12 +127,10 @@ main:
 
     # =========================
 
- 
 
     # Start at validation (no create_build / creation step)
 
     - validation_persistent:
-
         call: validate_image
 
         args:
@@ -204,10 +165,8 @@ main:
 
         result: validation_results
 
- 
 
     - set_persistent_context:
-
         assign:
 
           - validation_instance: ${validation_results.validation_instance}
@@ -215,31 +174,22 @@ main:
           - raw_validation_scan_result: ${validation_results.scan_result}
 
           - validation_scan_result: ${validation_results.scan_result}
-
- 
-
     # Promote gate:
-
     # If scan_result != "Pass" OR skip_promotion = true → go straight to cleanup_step_persistent
-
     # Else (scan_result == "Pass" and skip_promotion = false) → go to notify (promotion)
 
     - check_result_persistent:
-
         switch:
 
           - condition: ${validation_scan_result != "Pass" or skip_promotion}
-
             next: cleanup_step_persistent
 
         next: notify_cleanup_promote_step
 
- 
 
     # "Promotion" step for you = notify promote/cleanup workflow via Pub/Sub (only on Pass)
 
     - notify_cleanup_promote_step:
-
         call: notify_cleanup_promote
 
         args:
@@ -270,24 +220,19 @@ main:
 
         next: route_cleanup_after_notify
 
- 
 
     - route_cleanup_after_notify:
-
         switch:
 
             - condition: ${text.to_lower(server_type) == "ephemeral"}
-
               next: cleanup_step_ephemeral
 
         next: cleanup_step_persistent
 
- 
 
     # Cleanup step – runs for both Pass and Fail
 
     - cleanup_step_persistent:
-
         call: cleanup_artifacts
 
         args:
@@ -314,7 +259,6 @@ main:
 
         next: return_result
 
- 
 
     # =========================
 
@@ -322,12 +266,10 @@ main:
 
     # =========================
 
- 
 
     # Step 1: Create VM with startup script and wait for Pass/Fail from serial-port output
 
     - validation_ephemeral:
-
         call: validate_image_ephemeral
 
         args:
@@ -358,10 +300,8 @@ main:
 
         result: validation_ephemeral_results
 
- 
 
     - set_ephemeral_context:
-
         assign:
 
           # NOTE: validate_image_ephemeral returns validation_instance + scan result (mapped from instance_name)
@@ -372,10 +312,8 @@ main:
 
           - validation_scan_result: ${text.replace_all(text.replace_all(validation_ephemeral_results.scan_result, "\n", ""), " ", "")}
 
- 
 
     - log_ephemeral_context:
-
         call: sys.log
 
         args:
@@ -386,26 +324,21 @@ main:
 
         next: check_result_ephemeral
 
- 
 
     # Step 2: Check if validation passed
 
     - check_result_ephemeral:
-
         switch:
 
           - condition: ${validation_scan_result == "Pass"}
-
             next: remove_agent_and_create_image_step
 
         next: cleanup_step_ephemeral
 
- 
 
     # Step 3: Create new image (Qualys already removed inside startup-script)
 
     - remove_agent_and_create_image_step:
-
         call: remove_agent_create_image
 
         args:
@@ -424,54 +357,36 @@ main:
 
         next: set_ephemeral_image_id
 
-   
 
     - set_ephemeral_image_id:
-
         assign:
 
             - image_id: ${new_image_result.new_image_id}
-
         next: notify_cleanup_promote_step
 
- 
 
     # # Step 4: Promote new image to display project (only if Pass)
-
     # - promotion_ephemeral:
-
     #     call: promote_ephemeral_image
-
     #     args:
-
     #       image_id: ${new_image_result.new_image_id}  
-
     #       project_id: ${project_id}  
-
     #       display_project_id: ${display_project_id}
-
     #       logs_mode: ${logs_mode}
-
     #     result: promotion_result
-
     #     next: set_new_image_id
 
- 
 
     - set_new_image_id:
-
          assign:
 
            - new_image_id: ${new_image_result.new_image_id}
-
          next: notify_cleanup_promote_step
 
- 
 
     # Step 5: Cleanup VM (always)
 
     - cleanup_step_ephemeral:
-
         call: cleanup_ephemeral_vm
 
         args:
@@ -488,7 +403,6 @@ main:
 
         next: return_result
 
- 
 
     # =========================
 
@@ -497,7 +411,6 @@ main:
     # =========================
 
     - return_result:
-
         return:
 
           server_type: ${server_type}
@@ -514,7 +427,6 @@ main:
 
           new_image_id: ${default(new_image_id, "not_applicable")}
 
- 
 
 # -------------------------------------------------------------------
 
@@ -522,22 +434,18 @@ main:
 
 # -------------------------------------------------------------------
 
- 
 
 notify_cleanup_promote:
 
   params: [project_id, image_id, scan_result, validation_instance, skip_destroy, skip_promotion, source_project_id, display_project_id, location_id, os_family, server_type]
 
- 
 
   steps:
 
     - build_promote_payload:
-
         assign:
 
             - promote_payload:
-
                 image_id: ${image_id}
 
                 scan_result: ${scan_result}
@@ -563,7 +471,6 @@ notify_cleanup_promote:
                 project_id: ${project_id}
 
     - publish_message:
-
         call: googleapis.pubsub.v1.projects.topics.publish
 
         args:
@@ -575,16 +482,12 @@ notify_cleanup_promote:
             messages:
 
                 - data: ${base64.encode(json.encode(promote_payload))}
-
         result: pubsub_result
 
- 
 
     - return_pubsub:
-
         return: ${pubsub_result}
 
- 
 
 # -------------------------------------------------------------------
 
@@ -592,52 +495,42 @@ notify_cleanup_promote:
 
 # -------------------------------------------------------------------
 
- 
 
 validate_image:
 
   params: [image_id, project_id, location_id, instance_name, override_scan_result, logs_mode, os_family, repo_name, repo_dir, repo_branch, zone, subnet_name, machine_type, service_account]
 
- 
 
   steps:
 
     # 1) Allow manual override
 
     - check_override:
-
         switch:
 
           - condition: ${text.to_lower(override_scan_result) == "pass"}
-
             next: return_override_pass
 
           - condition: ${text.to_lower(override_scan_result) == "fail"}
-
             next: return_override_fail
 
         next: skip_instance_creation
 
- 
 
     # 2) If a validation instance already exists with the expected name, treat it as already validated
 
     - skip_instance_creation:
-
         switch:
 
           - condition: ${instance_name == image_id + "-validation"}
-
             next: derive_pass_from_existing
 
         next: create_instance
 
- 
 
     # 3) Normal path – create validation VM and run validate.sh
 
     - create_instance:
-
         call: validation_instance
 
         args:
@@ -666,65 +559,53 @@ validate_image:
 
           service_account: ${service_account}
 
- 
 
         result: validation_output
 
- 
 
     - assign_results:
-
         assign:
 
           - instance_name: ${validation_output.instance_name}
 
           - scan_result: ${validation_output.scan_result}
 
- 
 
     - return_multiple_values:
-
         return:
 
           validation_instance: ${instance_name}
 
           scan_result: ${scan_result}
 
- 
 
     # 4) If caller passed in an already-known validation instance, mark it Pass
 
     - derive_pass_from_existing:
-
         return:
 
           validation_instance: ${instance_name}
 
           scan_result: "Pass"
 
- 
 
     # 5) Override handlers
 
     - return_override_pass:
-
         return:
 
           validation_instance: ${instance_name}
 
           scan_result: "Pass"
 
- 
 
     - return_override_fail:
-
         return:
 
           validation_instance: ${instance_name}
 
           scan_result: "Fail"
 
- 
 
 # -------------------------------------------------------------------
 
@@ -732,18 +613,15 @@ validate_image:
 
 # -------------------------------------------------------------------
 
- 
 
 validation_instance:
 
   params: [image_id, project_id, location_id, os_family, repo_name, repo_branch, repo_dir, logs_mode, zone, subnet_name, machine_type, service_account]
 
- 
 
   steps:
 
     - the_build:
-
         call: googleapis.cloudbuild.v1.projects.builds.create
 
         args:
@@ -769,7 +647,6 @@ validation_instance:
               # Step 0: Now using gcloud builder for gcloud command access
 
               - name: 'gcr.io/cloud-builders/gcloud' # <-- **UPDATED** to use the Google Cloud CLI builder image
-
                 id: 'RUN-SHEBANG-AND-CRLF-FIX'
 
                 entrypoint: 'bash'
@@ -779,7 +656,6 @@ validation_instance:
                   - '-c'
 
                   - |
-
                     set -e
 
                     set -o pipefail
@@ -790,7 +666,6 @@ validation_instance:
 
                     ls -la
 
- 
 
                     cd "pipelines/${_OS_FAMILY}"
 
@@ -800,62 +675,43 @@ validation_instance:
 
                     ls -la
 
- 
 
                     echo "DEBUG: validate dir contents (if present)"
 
                     ls -la validate || echo "DEBUG: validate dir not found"
 
- 
 
                     chmod +x ./validate/validate-image.sh
 
- 
 
                     INSTANCE_NAME="${_CANDIDATE_IMAGE}-validation-$(date -u +%Y%m%d-%H%M%S)"
 
                     echo "Creating validation VM: $${INSTANCE_NAME}"
 
- 
 
                     # CONFIGURATION: Project ID, subnet, service account, and machine type should be passed via substitutions
-
                     gcloud compute instances create "$${INSTANCE_NAME}" \
 
                       --image=projects/${_PROJECT_ID}/global/images/${_CANDIDATE_IMAGE} \
-
                       --machine-type=${_MACHINE_TYPE} \
-
                       --subnet=${_SUBNET_NAME} \
-
                       --no-address \
-
                       --service-account=${_SERVICE_ACCOUNT} \
-
                       --zone=${_ZONE} \
-
                       --scopes=cloud-platform
-
- 
-
                     echo "Waiting for VM to be ready and SSH service to start..."
 
                     # Wait for VM to be fully running and SSH ready
-
                     sleep 30
 
                     # Additional check to ensure VM is ready
-
                     for i in {1..12}; do
 
                       VM_STATUS=$$(gcloud compute instances describe "$${INSTANCE_NAME}" \
 
                         --zone=${_ZONE} \
-
                         --project=${_PROJECT_ID} \
-
                         --format="get(status)" 2>/dev/null || echo "PENDING")
-
                       if [ "$${VM_STATUS}" = "RUNNING" ]; then
 
                         echo "VM is RUNNING"
@@ -870,40 +726,28 @@ validation_instance:
 
                     done
 
- 
 
                     echo "Running master validation script (validate-image.sh) against $${INSTANCE_NAME}..."
 
- 
 
                     VALIDATION_RESULT="Fail" # Default
 
                     VALIDATION_EXIT_CODE=1
 
- 
 
                     # FIX: SSH into VM and run validation script there (not in Cloud Build container)
-
                     # This ensures systemctl commands run on the VM where systemd is available
-
                     if gcloud compute ssh "$${INSTANCE_NAME}" \
 
                       --zone=${_ZONE} \
-
                       --project=${_PROJECT_ID} \
-
                       --tunnel-through-iap \
-
                       --command="cd /tmp && sudo bash -c '
-
                         # Check if validate-image.sh exists in expected location on VM
-
                         # If not, we need to copy it or run validation commands directly
-
                         if [ -f /home/*/validate-image.sh ] || [ -f /root/validate-image.sh ]; then
 
                           # Script exists on VM, run it
-
                           SCRIPT_PATH=$$(find /home /root -name validate-image.sh 2>/dev/null | head -1)
 
                           bash $${SCRIPT_PATH}
@@ -911,11 +755,9 @@ validation_instance:
                         else
 
                           # Script not found, run validation commands directly on VM
-
                           echo \"Running validation checks directly on VM...\"
 
                           # Check CrowdStrike Falcon Sensor
-
                           if sudo systemctl status falcon-sensor >/dev/null 2>&1; then
 
                             echo \"Falcon Sensor is running\"
@@ -931,7 +773,6 @@ validation_instance:
                           fi
 
                           # Check Qualys Cloud Agent
-
                           if sudo systemctl status qualys-cloud-agent.service >/dev/null 2>&1; then
 
                             echo \"Qualys Cloud Agent is running\"
@@ -947,7 +788,6 @@ validation_instance:
                           fi
 
                           # Display Qualys logs
-
                           if [ -f /var/log/qualys/qualys-cloud-agent.log ]; then
 
                             echo \"Qualys Cloud Agent logs:\"
@@ -957,7 +797,6 @@ validation_instance:
                           fi
 
                           # Exit with appropriate code
-
                           if [ $${FALCON_OK} -eq 1 ] && [ $${QUALYS_OK} -eq 1 ]; then
 
                             echo \"Security agent validation completed successfully!\"
@@ -988,15 +827,12 @@ validation_instance:
 
                     fi
 
- 
 
                     echo "Validation Result (exit code=$${VALIDATION_EXIT_CODE}): $${VALIDATION_RESULT}"
 
- 
 
                     echo "{\"instance_name\":\"$${INSTANCE_NAME}\",\"scan_result\":\"$${VALIDATION_RESULT}\"}" > "$$BUILDER_OUTPUT/output"
 
- 
 
             substitutions:
 
@@ -1029,13 +865,10 @@ validation_instance:
               - ${os_family}
 
               - "validation_instance"
-
         result: the_buildResults
 
- 
 
     - decode_build_result:
-
         assign:
 
           - validation_info_json: ${text.decode(base64.decode(the_buildResults.metadata.build.results.buildStepOutputs[0]))}
@@ -1046,30 +879,23 @@ validation_instance:
 
           - scan_result: ${validation_info.scan_result}
 
- 
 
     - check_build_status:
-
         switch:
 
           - condition: ${len(instance_name) > 0}
-
             next: return_the_results
 
         next: build_failed
 
- 
 
     - build_failed:
-
         raise:
 
           message: "Validation instance was not created or validation script failed."
 
- 
 
     - return_the_results:
-
         return:
 
           instance_name: ${instance_name}
@@ -1082,28 +908,22 @@ validation_instance:
 
 # -------------------------------------------------------------------
 
- 
 
 cleanup_artifacts:
 
   params: [image_id, project_id, location_id, instance_name, skip_destroy, scan_result, os_family, zone, logs_mode]
 
- 
 
   steps:
 
     - skip_instance_creation:
-
         switch:
 
           - condition: ${skip_destroy}
-
             next: return_skipped
 
- 
 
     - delete_instance:
-
         call: googleapis.cloudbuild.v1.projects.builds.create
 
         args:
@@ -1117,7 +937,6 @@ cleanup_artifacts:
             steps:
 
               - name: "gcr.io/cloud-builders/gcloud"
-
                 entrypoint: "bash"
 
                 args:
@@ -1125,7 +944,6 @@ cleanup_artifacts:
                   - -c
 
                   - |
-
                     gcloud compute instances stop ${_INSTANCE_NAME} --zone ${_ZONE}
 
                     gcloud compute instances delete ${_INSTANCE_NAME} --zone ${_ZONE} --quiet || true
@@ -1149,13 +967,10 @@ cleanup_artifacts:
               - ${os_family}
 
               - "delete_instance"
-
         result: delete_instanceResults
 
- 
 
     - delete_image:
-
         call: googleapis.cloudbuild.v1.projects.builds.create
 
         args:
@@ -1169,7 +984,6 @@ cleanup_artifacts:
             steps:
 
               - name: "gcr.io/cloud-builders/gcloud"
-
                 entrypoint: "bash"
 
                 args:
@@ -1177,14 +991,12 @@ cleanup_artifacts:
                   - -c
 
                   - |
-
                     if [ "${_SCAN_FAIL}" != "Pass" ]; then
 
                       gcloud logging write FAILED-SCAN-LOG "Validation failed for ${_CANDIDATE_IMAGE}" --severity "WARNING"
 
                     fi
 
- 
 
                     gcloud compute images delete ${_CANDIDATE_IMAGE} --quiet || true
 
@@ -1207,30 +1019,24 @@ cleanup_artifacts:
               - ${os_family}
 
               - "delete_image"
-
         result: delete_imageResults
 
- 
 
     - return_cleanup:
-
         return:
 
           instance_cleanup: ${delete_instanceResults}
 
           image_cleanup: ${delete_imageResults}
 
- 
 
     - return_skipped:
-
         return:
 
           instance_cleanup: "skipped"
 
           image_cleanup: "skipped"
 
- 
 
 # -------------------------------------------------------------------
 
@@ -1238,18 +1044,15 @@ cleanup_artifacts:
 
 # -------------------------------------------------------------------
 
- 
 
 validate_image_ephemeral:
 
   params: [image_id, project_id, display_project_id, repo_name, repo_branch, repo_dir, service_account, zone, machine_type, logs_mode, os_family, subnet_name]
 
- 
 
   steps:
 
     - the_build_ephemeral:
-
         call: googleapis.cloudbuild.v1.projects.builds.create
 
         args:
@@ -1270,12 +1073,10 @@ validate_image_ephemeral:
 
                 dir: ""
 
- 
 
             steps:
 
               - name: "gcr.io/cloud-builders/gcloud"
-
                 entrypoint: "bash"
 
                 args:
@@ -1283,23 +1084,18 @@ validate_image_ephemeral:
                   - -c
 
                   - |
-
                     set -e
 
                     set -o pipefail
 
- 
 
                     # Generate a unique instance name
-
                     INSTANCE_NAME="${_IMAGE_ID}-val-$(date -u +%Y%m%d-%H%M%S)"
 
                     echo "Starting Validation for Instance: $${INSTANCE_NAME}"
 
- 
 
                     # Construct Service Account flag if provided
-
                     SA_FLAG=""
 
                     if [ -n "${_SERVICE_ACCOUNT}" ]; then
@@ -1308,12 +1104,10 @@ validate_image_ephemeral:
 
                     fi
 
- 
 
                     # ---------------------------------------------------------
 
                     # 1. VM CREATION & METADATA INJECTION
-
                     # Maps local repository paths to Instance Metadata keys.
 
                     # ---------------------------------------------------------
@@ -1321,23 +1115,15 @@ validate_image_ephemeral:
                     gcloud compute instances create "$${INSTANCE_NAME}" \
 
                       --image=projects/${_PROJECT_ID}/global/images/${_IMAGE_ID} \
-
                       --machine-type=${_MACHINE_TYPE} \
-
                       --subnet=${_SUBNET_NAME} \
-
                       --no-address \
-
                       --zone=${_ZONE} \
-
                       --project=${_PROJECT_ID} \
-
                       --scopes=cloud-platform \
-
                       $${SA_FLAG} \
 
                       --metadata-from-file=\
-
                     startup-script=pipelines/${_OS_FAMILY}/validate/validate_ephemeral.sh,\
 
                     master-script-content=scripts/validate.sh,\
@@ -1350,7 +1136,6 @@ validate_image_ephemeral:
 
                     val-db=roles/install-database-client/validation/validate.sh
 
- 
 
                     echo "---------------------------------------------------------"
 
@@ -1358,24 +1143,17 @@ validate_image_ephemeral:
 
                     echo "---------------------------------------------------------"
 
-                   
 
                     RESULT="Fail" # Default to fail if timeout occurs
 
-                   
 
                     # Poll for up to 15 minutes (90 iterations * 10 seconds)
-
                     for i in {1..90}; do
 
                       # Use port 1 for general serial output (ttyS1 in the script)
-
                       SERIAL=$$(gcloud compute instances get-serial-port-output "$${INSTANCE_NAME}" \
 
                         --zone=${_ZONE} --project=${_PROJECT_ID} --port=1 || true)
-
- 
-
                       if echo "$${SERIAL}" | grep -q "RUNTIME_VALIDATION_RESULT=Pass"; then
 
                         RESULT="Pass"
@@ -1394,7 +1172,6 @@ validate_image_ephemeral:
 
                       fi
 
-                     
 
                       if (( i % 6 == 0 )); then echo "Still waiting for validation result... ($$i/90)"; fi
 
@@ -1402,17 +1179,13 @@ validate_image_ephemeral:
 
                     done
 
- 
 
                     echo "Final Validation Outcome: $${RESULT}"
 
- 
 
                     # Write structured output to builder_output for the Workflow to consume
-
                     echo "{\"instance_name\":\"$${INSTANCE_NAME}\",\"scan_result\":\"$${RESULT}\"}" > "$$BUILDER_OUTPUT/output"
 
- 
 
             substitutions:
 
@@ -1438,16 +1211,13 @@ validate_image_ephemeral:
 
               substitutionOption: ALLOW_LOOSE
 
- 
 
         result: the_build_ephemeralResults
 
- 
 
     # Extract results from the Build logs for the final Workflow return
 
     - decode_build_result:
-
         assign:
 
           - validation_info_json: ${text.decode(base64.decode(the_build_ephemeralResults.metadata.build.results.buildStepOutputs[0]))}
@@ -1458,10 +1228,8 @@ validate_image_ephemeral:
 
           - scan_result: ${validation_info.scan_result}
 
- 
 
     - return_validation_result:
-
         return:
 
           validation_instance: ${instance_name}
@@ -1474,18 +1242,15 @@ validate_image_ephemeral:
 
 # -------------------------------------------------------------------
 
- 
 
 remove_agent_create_image:
 
   params: [instance_name, source_image_id, project_id, zone, logs_mode]
 
- 
 
   steps:
 
     - remove_agent_and_image:
-
         call: googleapis.cloudbuild.v1.projects.builds.create
 
         args:
@@ -1499,7 +1264,6 @@ remove_agent_create_image:
             steps:
 
               - name: "gcr.io/cloud-builders/gcloud"
-
                 entrypoint: "bash"
 
                 args:
@@ -1507,12 +1271,10 @@ remove_agent_create_image:
                   - -c
 
                   - |
-
                     set -e
 
                     set -o pipefail
 
-                   
 
                     instance_name="${_INSTANCE_NAME}"
 
@@ -1522,19 +1284,15 @@ remove_agent_create_image:
 
                     image_id="${_IMAGE_ID_VALUE}"
 
-                   
 
                     # Create unique image name (ephemeral, no-agent, timestamp)
-
                     unique_suffix=$(date +%Y%m%d%H%M%S)
 
                     # Rename 'persistent' to 'ephemeral'
-
                     image_id_stripped="${image_id/persistent/ephemeral}"
 
                     new_image_name="${image_id_stripped}-no-agent-${unique_suffix}"
 
- 
 
                     echo "[INFO] Starting image creation process" >&2
 
@@ -1542,50 +1300,32 @@ remove_agent_create_image:
 
                     echo "[INFO] New Image: $new_image_name" >&2
 
- 
 
                     # Stop instance
-
                     echo "[INFO] Stopping VM $instance_name..." >&2
 
                     gcloud compute instances stop "$instance_name" \
 
                       --zone="$zone" \
-
                       --project="$project_id" \
-
                       --quiet 2>&1 | grep -v "does not exist" || true >&2
-
-                   
-
                     echo "[INFO] Waiting for disk to settle..." >&2
 
                     sleep 15
 
-                   
 
                     # Create image
-
                     echo "[INFO] Creating new image from VM disk..." >&2
 
                     gcloud compute images create "$new_image_name" \
 
                       --source-disk="$instance_name" \
-
                       --source-disk-zone="$zone" \
-
                       --project="$project_id" \
-
                       --description="Validated and cleaned (Agent removed via startup script, Ephemeral Ready)" \
-
                       --family="rhel-runtime" \
-
                       --labels="source_image=$image_id,agent=removed,validation_status=passed,ephemeral=true" 2>&1 >&2 || exit 1
-
-                     
-
                     # Wait for image READY status (omitted the full loop for brevity, assume it's here)
-
                     max_retries=60
 
                     retry_count=0
@@ -1616,15 +1356,12 @@ remove_agent_create_image:
 
                     done
 
-                   
 
                     # Write JSON output to the special file for Cloud Build result metadata
-
                     echo "[INFO] Image successfully created: $new_image_name" >&2
 
                     echo "{\"new_image_id\":\"$new_image_name\",\"source_image_id\":\"$image_id\"}" > "$$BUILDER_OUTPUT/output"
 
-                   
 
             substitutions:
 
@@ -1648,10 +1385,8 @@ remove_agent_create_image:
 
         result: the_build_results
 
- 
 
     - decode_image_result:
-
         assign:
 
           # Successfully decode the base64 output from the build
@@ -1664,180 +1399,93 @@ remove_agent_create_image:
 
           - source_image_id_result: ${image_info.source_image_id}
 
- 
 
     - check_build_status:
-
         switch:
 
           - condition: ${len(new_image_id) > 0}
-
             next: return_the_results
 
         next: build_failed
 
- 
 
     - build_failed:
-
         raise:
 
           message: "Ephemeral image was not created."
 
- 
 
     - return_the_results:
-
         return:
 
           # REVERTED FIX: The main workflow expects this key, so we must return it.
-
           new_image_id: ${new_image_id}
 
           source_image_id_from_creation: ${source_image_id_result}
 
- 
 
 # # -------------------------------------------------------------------
-
 # #   CASE 2: PROMOTE IMAGE
-
 # # -------------------------------------------------------------------
-
- 
-
 # promote_ephemeral_image:
-
 #   params: [image_id, project_id, display_project_id, logs_mode]
-
- 
-
 #   steps:
-
 #     - promote:
-
 #         call: googleapis.cloudbuild.v1.projects.builds.create
-
 #         args:
-
 #           projectId: ${project_id}
-
 #           parent: ${"projects/" + project_id + "/locations/global"}
-
 #           body:
-
 #             steps:
-
 #               - name: "gcr.io/cloud-builders/gcloud"
-
 #                 entrypoint: "bash"
-
 #                 args:
-
 #                   - -c
-
 #                   - |
-
 #                     set -e
-
-                   
-
 #                     # Use the substitution variables directly
-
 #                     # These will be replaced by Cloud Build before execution
-
-                   
-
 #                     DISPLAY_IMAGE_NAME="${_IMAGE_ID_SUB}"
-
-                   
-
 #                     echo "Promoting image ${_IMAGE_ID_SUB} from ${_PROJECT_ID_SUB} to ${_DISPLAY_PROJECT_ID_SUB} as $${DISPLAY_IMAGE_NAME}..."
-
-                   
-
 #                     gcloud compute images create "$${DISPLAY_IMAGE_NAME}" \
-
 #                       --source-image="projects/${_PROJECT_ID_SUB}/global/images/${_IMAGE_ID_SUB}" \
-
 #                       --project="${_DISPLAY_PROJECT_ID_SUB}" \
-
 #                       --description="Promoted validated ephemeral image from ${_PROJECT_ID_SUB} (Qualys agent removed)" \
-
 #                       --family="rhel-runtime" \
-
 #                       --labels="source_image=${_IMAGE_ID_SUB},source_project=${_PROJECT_ID_SUB},validation_status=passed,promoted_date=$${PROMOTED_DATE},ephemeral=true"
-
-                     
-
 #                     echo "Waiting for promoted image to be ready..."
-
 #                     for i in {1..30}; do
-
 #                       STATUS=$$(gcloud compute images describe "$${DISPLAY_IMAGE_NAME}" \
-
 #                         --project="${_DISPLAY_PROJECT_ID_SUB}" \
-
 #                         --format="get(status)" 2>/dev/null || echo "NOT_FOUND")
-
-                     
-
 #                       if [ "$${STATUS}" = "READY" ]; then
-
 #                         echo "Image is READY"
-
 #                         break
-
 #                       elif [ "$${STATUS}" = "FAILED" ]; then
-
 #                         echo "ERROR: Promoted image creation failed"
-
 #                         exit 1
-
 #                       fi
-
 #                       echo "   Image status: $${STATUS} (waiting...)"
-
 #                       sleep 10
-
 #                     done
-
-                   
-
 #                     echo "Image promotion process completed for $${DISPLAY_IMAGE_NAME}!"
-
 #             substitutions:
-
 #               _IMAGE_ID_SUB: ${image_id}
-
 #               _PROJECT_ID_SUB: ${project_id}
-
 #               _DISPLAY_PROJECT_ID_SUB: ${display_project_id}
-
 #             options:
-
 #               logging: ${logs_mode}
-
 #             tags:
-
 #               - "promotion"
-
 #               - "ephemeral"
-
 #         result: promote_result
-
- 
-
 #     - return_promote_result:
-
 #         return: ${"Image promoted successfully with ephemeral label (see Cloud Build logs for details)"}
 
 # -------------------------------------------------------------------
 
 #   CASE 2: CLEANUP — Delete validation VM
-
 #FIX: Ensures this step does not fail if the VM was already deleted
-
 # by the internal cleanup of the 'validate_image_ephemeral' step.
 
 # -------------------------------------------------------------------
@@ -1849,7 +1497,6 @@ cleanup_ephemeral_vm:
   steps:
 
     - delete_vm:
-
         try:
 
           call: googleapis.cloudbuild.v1.projects.builds.create
@@ -1865,7 +1512,6 @@ cleanup_ephemeral_vm:
               steps:
 
                 - name: "gcr.io/cloud-builders/gcloud"
-
                   entrypoint: "bash"
 
                   args:
@@ -1873,7 +1519,6 @@ cleanup_ephemeral_vm:
                     - -c
 
                     - |
-
                       set -e
 
                       echo "Deleting ephemeral validation instance: ${_INSTANCE_NAME}"
@@ -1899,7 +1544,6 @@ cleanup_ephemeral_vm:
           steps:
 
             - log_cleanup_error:
-
                 call: sys.log
 
                 args:
@@ -1909,6 +1553,4 @@ cleanup_ephemeral_vm:
                   severity: "WARNING"
 
     - return_cleanup_status:
-
         return: "Cleanup step completed"
-
