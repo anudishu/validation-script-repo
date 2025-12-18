@@ -701,16 +701,16 @@ validation_instance:
 
 
 
-                    # CONFIGURATION: Project ID, subnet, service account, and machine type should be passed via substitutions
+                    # CONFIGURATION: Hardcoded values for cs-sh-image-bakery1748 project
                     gcloud compute instances create "$${INSTANCE_NAME}" \
 
-                      --image=projects/${_PROJECT_ID}/global/images/${_CANDIDATE_IMAGE} \
-                      --machine-type=${_MACHINE_TYPE} \
-                      --subnet=${_SUBNET_NAME} \
+                      --image=projects/cs-sh-image-bakery1748/global/images/${_CANDIDATE_IMAGE} \
+                      --machine-type=n1-standard-1 \
+                      --subnet=imgbake-bakery-usc1 \
                       --no-address \
-                      --service-account=${_SERVICE_ACCOUNT} \
-                      --zone=${_ZONE} \
-                      --project=${_PROJECT_ID} \
+                      --service-account=sa-kitchen-sh@cs-sh-image-bakery1748.iam.gserviceaccount.com \
+                      --zone=us-central1-a \
+                      --project=cs-sh-image-bakery1748 \
                       --scopes=cloud-platform
                     echo "Waiting for VM to be ready and SSH service to start..."
 
