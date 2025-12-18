@@ -80,11 +80,8 @@ main:
 
           - region: ${default(map.get(payload, "region"), "us-central1")}
 
-          # Derive zone from location_id if zone not provided
-          # If location_id is provided (e.g., "us-central1"), append "-a" to make it a zone
-          # Otherwise use provided zone or default to "us-central1-a"
-          - zone_from_location: ${default(location_id + "-a", "us-central1-a")}
-          - zone: ${default(map.get(input, "zone"), zone_from_location)}
+          # Hardcoded zone for cs-sh-image-bakery1748 project
+          - zone: "us-central1-a"
 
 
           - logs_mode: ${default(map.get(input, "logs_mode"), "CLOUD_LOGGING_ONLY")}
