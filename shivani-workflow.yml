@@ -857,7 +857,7 @@ validation_instance:
 
               _REPO_DIR: ${repo_dir}
 
-              _ZONE: ${zone}
+              _ZONE: "us-central1-a"
 
               _SUBNET_NAME: ${subnet_name}
 
@@ -965,7 +965,7 @@ cleanup_artifacts:
 
               _INSTANCE_NAME: ${instance_name}
 
-              _ZONE: ${zone}
+              _ZONE: "us-central1-a"
 
             options:
 
@@ -1208,7 +1208,7 @@ validate_image_ephemeral:
 
               _SERVICE_ACCOUNT: ${service_account}
 
-              _ZONE: ${zone}
+              _ZONE: "us-central1-a"
 
               _MACHINE_TYPE: ${machine_type}
 
@@ -1382,7 +1382,7 @@ remove_agent_create_image:
 
               _PROJECT_ID: ${project_id}
 
-              _ZONE: ${zone}
+              _ZONE: "us-central1-a"
 
               _IMAGE_ID_VALUE: ${source_image_id}
 
@@ -1542,7 +1542,7 @@ cleanup_ephemeral_vm:
 
                 _INSTANCE_NAME: ${instance_name}
 
-                _ZONE: ${zone}
+                _ZONE: "us-central1-a"
 
               options:
 
