@@ -51,16 +51,14 @@ main:
           severity: "INFO"
 
 
-    - log_mapped_values:
+    - assign_mapped_values:
         assign:
-
           - mapped_values_text: ${"MAPPED VALUES project_id=" + json.encode_to_string(project_id) + " location_id=" + json.encode_to_string(location_id) + " image_id=" + json.encode_to_string(image_id) + " server_type=" + json.encode_to_string(server_type) + " os_family=" + json.encode_to_string(os_family)}
+
+    - log_mapped_values:
         call: sys.log
-
         args:
-
           text: ${mapped_values_text}
-
           severity: "INFO"
 
 
