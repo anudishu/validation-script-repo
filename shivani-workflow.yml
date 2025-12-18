@@ -696,6 +696,7 @@ validation_instance:
                       --no-address \
                       --service-account=${_SERVICE_ACCOUNT} \
                       --zone=${_ZONE} \
+                      --project=${_PROJECT_ID} \
                       --scopes=cloud-platform
                     echo "Waiting for VM to be ready and SSH service to start..."
 
