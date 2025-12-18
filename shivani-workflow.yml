@@ -685,6 +685,19 @@ validation_instance:
                     INSTANCE_NAME="${_CANDIDATE_IMAGE}-validation-$(date -u +%Y%m%d-%H%M%S)"
 
                     echo "Creating validation VM: $${INSTANCE_NAME}"
+                    echo "DEBUG: _ZONE=${_ZONE}"
+                    echo "DEBUG: _PROJECT_ID=${_PROJECT_ID}"
+                    echo "DEBUG: _MACHINE_TYPE=${_MACHINE_TYPE}"
+                    echo "DEBUG: _SUBNET_NAME=${_SUBNET_NAME}"
+                    if [ -z "${_ZONE}" ]; then
+                      echo "ERROR: Zone is not specified. _ZONE is empty."
+                      exit 1
+                    fi
+                    if [ -z "${_PROJECT_ID}" ]; then
+                      echo "ERROR: Project ID is not specified."
+                      exit 1
+                    fi
+
 
 
                     # CONFIGURATION: Project ID, subnet, service account, and machine type should be passed via substitutions
