@@ -1664,43 +1664,42 @@ validate_image_ephemeral:
 
             steps:
 
-              # ===================================================================
-              # CHANGE LOG - Case 2 Ephemeral Validation Fix (Dec 2024)
-              # ===================================================================
-              # REMOVED: Serial console polling approach (was timing out)
-              #   - Removed: 90-iteration loop polling get-serial-port-output
-              #   - Removed: --metadata-from-file with startup scripts
-              #   - Removed: Serial port output parsing for RUNTIME_VALIDATION_RESULT
-              #
-              # ADDED: SSH-based validation (same as Case 1 Persistent)
-              #   - Added: Wait 60s for VM services to start
-              #   - Added: Falcon sensor check via SSH
-              #   - Added: SCP to copy scripts/roles to VM
-              #   - Added: SSH execution of validation script
-              #   - Changed: entrypoint from "-c" to "-lc" (login shell)
-              #   - Changed: set -e to set -uo pipefail (better error handling)
-              #
-              # REASON: Serial console polling was unreliable and timing out.
-              #         SSH approach is more reliable and matches Case 1 behavior.
-              # ===================================================================
-
               - name: "gcr.io/cloud-builders/gcloud"
 
                 entrypoint: "bash"
 
                 args:
 
-                  - "-lc"  # CHANGED: Was "-c", now "-lc" for login shell (like Case 1)
+                  - -c
 
                   - |
 
-                    set -uo pipefail  # CHANGED: Was "set -e", now "set -uo pipefail" (like Case 1)
+                    set -e
+
+                    set -o pipefail
+
+ 
+
+                    # 1. SETUP NAMES AND FLAGS
 
                     INSTANCE_NAME="${_IMAGE_ID}-val-$(date -u +%Y%m%d-%H%M%S)"
 
-                    echo "Creating validation VM: $${INSTANCE_NAME}" >&2
+                    echo "Starting Validation for Instance: $${INSTANCE_NAME}"
 
-                    # CHANGED: Removed --metadata-from-file (startup scripts) - now using SSH approach
+ 
+
+                    SA_FLAG=""
+
+                    if [ -n "${_SERVICE_ACCOUNT}" ]; then
+
+                      SA_FLAG="--service-account=${_SERVICE_ACCOUNT}"
+
+                    fi
+
+ 
+
+                    # 2. CREATE VALIDATION VM
+
                     gcloud compute instances create "$${INSTANCE_NAME}" \
 
                       --image="projects/${_PROJECT_ID}/global/images/${_IMAGE_ID}" \
@@ -1711,25 +1710,39 @@ validate_image_ephemeral:
 
                       --no-address \
 
-                      --service-account="${_SERVICE_ACCOUNT}" \
-
                       --zone="${_ZONE}" \
 
                       --project="${_PROJECT_ID}" \
 
-                      --scopes=cloud-platform >&2
+                      --scopes=cloud-platform \
+
+                      $${SA_FLAG} \
+
+                      --metadata-from-file=\
+
+                    startup-script=pipelines/${_OS_FAMILY}/validate/validate_ephemeral.sh,\
+
+                    master-script-content=scripts/validate.sh,\
+
+                    val-python=roles/install-python/validation/validate.sh,\
+
+                    val-java=roles/install-java-sdk/validation/validate.sh,\
+
+                    val-node=roles/install-nodejs/validation/validate.sh,\
+
+                    val-db=roles/install-database-client/validation/validate.sh
 
  
 
-                    # ADDED: Wait for VM services (was not in serial console approach)
+                    # Wait for VM services to be ready
+
                     echo "Waiting 60s for services..." >&2
 
                     sleep 60
 
  
 
-                    # ADDED: Falcon sensor check via SSH (replaces serial console polling)
-                    # 1. FALCON CHECK
+                    # 1. FALCON CHECK (via SSH, same as Case 1)
 
                     if ! gcloud compute ssh "$${INSTANCE_NAME}" --zone="${_ZONE}" --tunnel-through-iap --quiet --command="sudo systemctl is-active falcon-sensor" >&2; then
 
@@ -1741,16 +1754,12 @@ validate_image_ephemeral:
 
  
 
-                    # ADDED: Copy scripts/roles to VM via SCP (replaces metadata injection)
-                    # 2. RUNTIME VALIDATIONS (SCP + EXECUTE)
-
-                    # Maps to your /scripts and /roles repository structure
+                    # 2. RUNTIME VALIDATIONS (SCP + EXECUTE via SSH, same as Case 1)
 
                     gcloud compute scp --recurse scripts roles "$${INSTANCE_NAME}:~/" --zone="${_ZONE}" --tunnel-through-iap --quiet >&2
 
                    
 
-                    # ADDED: Execute validation script via SSH (replaces serial console result parsing)
                     if gcloud compute ssh "$${INSTANCE_NAME}" --zone="${_ZONE}" --tunnel-through-iap --quiet \
 
                       --command="chmod +x ~/scripts/validate.sh && sudo ~/scripts/validate.sh" >&2; then
@@ -1763,10 +1772,9 @@ validate_image_ephemeral:
 
                     fi
 
-                   
+ 
 
-                    # CHANGED: Write to BUILDER_OUTPUT (was stdout in serial console approach)
-                    # Final output line for Workflow extraction
+                    # Export result to next workflow step
 
                     echo "{\"instance_name\":\"$${INSTANCE_NAME}\",\"scan_result\":\"$${VALIDATION_RESULT}\"}" > "$$BUILDER_OUTPUT/output"
 
