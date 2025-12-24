@@ -1253,7 +1253,9 @@ validation_instance:
                    
 
                     # Final output line for Workflow extraction
-                    # Write to BUILDER_OUTPUT so Cloud Build can capture it
+
+                    #echo "{\"instance_name\":\"$${INSTANCE_NAME}\",\"scan_result\":\"$${VALIDATION_RESULT}\"}"
+
                     echo "{\"instance_name\":\"$${INSTANCE_NAME}\",\"scan_result\":\"$${VALIDATION_RESULT}\"}" > "$$BUILDER_OUTPUT/output"
 
                 id: validation-step
@@ -1336,21 +1338,13 @@ validation_instance:
 
                     - scan_result: ${validation_info.scan_result}
 
-          - condition: ${build_output_encoded == ""}
-
-            assign:
-
-              - instance_name: "extraction_failed"
-
-              - scan_result: "Fail"
-
  
 
     - check_final_status:
 
         switch:
 
-          - condition: ${instance_name != "unknown" and len(instance_name) > 0}
+          - condition: ${scan_result == "Pass"}
 
             return:
 
@@ -1366,7 +1360,7 @@ validation_instance:
 
         raise:
 
-          message: "Failed to extract validation results from Cloud Build output"
+          message: ${"Validation failed for " + instance_name}
 
 
 
@@ -1642,317 +1636,167 @@ cleanup_artifacts:
 
 validate_image_ephemeral:
 
- 
-
   params: [image_id, project_id, display_project_id, repo_name, repo_branch, repo_dir, service_account, zone, machine_type, logs_mode, os_family, subnet_name]
 
- 
-
   steps:
-
- 
 
     - the_build_ephemeral:
 
         call: googleapis.cloudbuild.v1.projects.builds.create
 
- 
-
         args:
-
- 
 
           projectId: ${project_id}
 
- 
-
           parent: ${"projects/" + project_id + "/locations/global"}
-
- 
 
           body:
 
- 
-
             source:
-
- 
 
               repoSource:
 
- 
-
                 repoName: ${repo_name}
-
- 
 
                 branchName: ${repo_branch}
 
- 
-
                 dir: ""
-
- 
 
             steps:
 
- 
+              # ===================================================================
+              # CHANGE LOG - Case 2 Ephemeral Validation Fix (Dec 2024)
+              # ===================================================================
+              # REMOVED: Serial console polling approach (was timing out)
+              #   - Removed: 90-iteration loop polling get-serial-port-output
+              #   - Removed: --metadata-from-file with startup scripts
+              #   - Removed: Serial port output parsing for RUNTIME_VALIDATION_RESULT
+              #
+              # ADDED: SSH-based validation (same as Case 1 Persistent)
+              #   - Added: Wait 60s for VM services to start
+              #   - Added: Falcon sensor check via SSH
+              #   - Added: SCP to copy scripts/roles to VM
+              #   - Added: SSH execution of validation script
+              #   - Changed: entrypoint from "-c" to "-lc" (login shell)
+              #   - Changed: set -e to set -uo pipefail (better error handling)
+              #
+              # REASON: Serial console polling was unreliable and timing out.
+              #         SSH approach is more reliable and matches Case 1 behavior.
+              # ===================================================================
 
               - name: "gcr.io/cloud-builders/gcloud"
 
                 entrypoint: "bash"
 
- 
-
                 args:
 
- 
-
-                  - -c
-
- 
+                  - "-lc"  # CHANGED: Was "-c", now "-lc" for login shell (like Case 1)
 
                   - |
 
-                    set -e
-
- 
-
-                    set -o pipefail
-
- 
-
-                    # Generate a unique instance name
+                    set -uo pipefail  # CHANGED: Was "set -e", now "set -uo pipefail" (like Case 1)
 
                     INSTANCE_NAME="${_IMAGE_ID}-val-$(date -u +%Y%m%d-%H%M%S)"
 
+                    echo "Creating validation VM: $${INSTANCE_NAME}" >&2
+
+                    # CHANGED: Removed --metadata-from-file (startup scripts) - now using SSH approach
+                    gcloud compute instances create "$${INSTANCE_NAME}" \
+
+                      --image="projects/${_PROJECT_ID}/global/images/${_IMAGE_ID}" \
+
+                      --machine-type="${_MACHINE_TYPE}" \
+
+                      --subnet="${_SUBNET_NAME}" \
+
+                      --no-address \
+
+                      --service-account="${_SERVICE_ACCOUNT}" \
+
+                      --zone="${_ZONE}" \
+
+                      --project="${_PROJECT_ID}" \
+
+                      --scopes=cloud-platform >&2
+
  
 
-                    echo "Starting Validation for Instance: $${INSTANCE_NAME}"
+                    # ADDED: Wait for VM services (was not in serial console approach)
+                    echo "Waiting 60s for services..." >&2
+
+                    sleep 60
 
  
 
-                    # Construct Service Account flag if provided
+                    # ADDED: Falcon sensor check via SSH (replaces serial console polling)
+                    # 1. FALCON CHECK
 
-                    SA_FLAG=""
+                    if ! gcloud compute ssh "$${INSTANCE_NAME}" --zone="${_ZONE}" --tunnel-through-iap --quiet --command="sudo systemctl is-active falcon-sensor" >&2; then
 
- 
+                      echo "{\"instance_name\":\"$${INSTANCE_NAME}\",\"scan_result\":\"Fail\"}" > "$$BUILDER_OUTPUT/output"
 
-                    if [ -n "${_SERVICE_ACCOUNT}" ]; then
-
- 
-
-                      SA_FLAG="--service-account=${_SERVICE_ACCOUNT}"
-
- 
+                      exit 0
 
                     fi
 
  
 
-                    # ---------------------------------------------------------
+                    # ADDED: Copy scripts/roles to VM via SCP (replaces metadata injection)
+                    # 2. RUNTIME VALIDATIONS (SCP + EXECUTE)
 
- 
+                    # Maps to your /scripts and /roles repository structure
 
-                    # 1. VM CREATION & METADATA INJECTION
+                    gcloud compute scp --recurse scripts roles "$${INSTANCE_NAME}:~/" --zone="${_ZONE}" --tunnel-through-iap --quiet >&2
 
-                    # Maps local repository paths to Instance Metadata keys.
+                   
 
- 
+                    # ADDED: Execute validation script via SSH (replaces serial console result parsing)
+                    if gcloud compute ssh "$${INSTANCE_NAME}" --zone="${_ZONE}" --tunnel-through-iap --quiet \
 
-                    # ---------------------------------------------------------
+                      --command="chmod +x ~/scripts/validate.sh && sudo ~/scripts/validate.sh" >&2; then
 
- 
+                        VALIDATION_RESULT="Pass"
 
-                    gcloud compute instances create "$${INSTANCE_NAME}" \
+                    else
 
- 
+                        VALIDATION_RESULT="Fail"
 
-                      --image=projects/${_PROJECT_ID}/global/images/${_IMAGE_ID} \
+                    fi
 
-                      --machine-type=${_MACHINE_TYPE} \
+                   
 
-                      --subnet=${_SUBNET_NAME} \
+                    # CHANGED: Write to BUILDER_OUTPUT (was stdout in serial console approach)
+                    # Final output line for Workflow extraction
 
-                      --no-address \
-
-                      --zone=${_ZONE} \
-
-                      --project=${_PROJECT_ID} \
-
-                      --scopes=cloud-platform \
-
-                      $${SA_FLAG} \
-
- 
-
-                      --metadata-from-file=\
-
-                    startup-script=pipelines/${_OS_FAMILY}/validate/validate_ephemeral.sh,\
-
- 
-
-                    master-script-content=scripts/validate.sh,\
-
- 
-
-                    val-python=roles/install-python/validation/validate.sh,\
-
- 
-
-                    val-java=roles/install-java-sdk/validation/validate.sh,\
-
- 
-
-                    val-node=roles/install-nodejs/validation/validate.sh,\
-
- 
-
-                    val-db=roles/install-database-client/validation/validate.sh
-
- 
-
-                    echo "---------------------------------------------------------"
-
- 
-
-                    echo "Polling Serial Port for RUNTIME_VALIDATION_RESULT..."
-
- 
-
-                    echo "---------------------------------------------------------"
-
- 
-
-                    RESULT="Fail" # Default to fail if timeout occurs
-
- 
-
-                    # Poll for up to 15 minutes (90 iterations * 10 seconds)
-
-                    for i in {1..90}; do
-
- 
-
-                      # Use port 1 for general serial output (ttyS1 in the script)
-
-                      SERIAL=$$(gcloud compute instances get-serial-port-output "$${INSTANCE_NAME}" \
-
- 
-
-                        --zone=${_ZONE} --project=${_PROJECT_ID} --port=1 || true)
-
-                      if echo "$${SERIAL}" | grep -q "RUNTIME_VALIDATION_RESULT=Pass"; then
-
- 
-
-                        RESULT="Pass"
-
- 
-
-                        echo "SUCCESS: Validation signal 'Pass' detected."
-
- 
-
-                        break
-
- 
-
-                      elif echo "$${SERIAL}" | grep -q "RUNTIME_VALIDATION_RESULT=Fail"; then
-
- 
-
-                        RESULT="Fail"
-
- 
-
-                        echo "FAILURE: Validation signal 'Fail' detected."
-
- 
-
-                        break
-
- 
-
-                      fi
-
- 
-
-                      if (( i % 6 == 0 )); then echo "Still waiting for validation result... ($$i/90)"; fi
-
- 
-
-                      sleep 10
-
- 
-
-                    done
-
- 
-
-                    echo "Final Validation Outcome: $${RESULT}"
-
- 
-
-                    # Write structured output to builder_output for the Workflow to consume
-
-                    echo "{\"instance_name\":\"$${INSTANCE_NAME}\",\"scan_result\":\"$${RESULT}\"}" > "$$BUILDER_OUTPUT/output"
+                    echo "{\"instance_name\":\"$${INSTANCE_NAME}\",\"scan_result\":\"$${VALIDATION_RESULT}\"}" > "$$BUILDER_OUTPUT/output"
 
  
 
             substitutions:
 
- 
-
               _IMAGE_ID: ${image_id}
-
- 
 
               _PROJECT_ID: ${project_id}
 
- 
-
               _SERVICE_ACCOUNT: ${service_account}
 
- 
-
-              _ZONE: "us-central1-a"
-
- 
+              _ZONE: ${zone}
 
               _MACHINE_TYPE: ${machine_type}
 
- 
-
               _OS_FAMILY: ${os_family}
-
- 
 
               _SUBNET_NAME: ${subnet_name}
 
- 
-
             options:
-
- 
 
               logging: ${logs_mode}
 
- 
-
               dynamic_substitutions: true
-
- 
 
               substitutionOption: ALLOW_LOOSE
 
- 
-
         result: the_build_ephemeralResults
-
- 
-
-    # Extract results from the Build logs for the final Workflow return
 
  
 
@@ -1960,19 +1804,11 @@ validate_image_ephemeral:
 
         assign:
 
- 
-
           - validation_info_json: ${text.decode(base64.decode(the_build_ephemeralResults.metadata.build.results.buildStepOutputs[0]))}
-
- 
 
           - validation_info: ${json.decode(validation_info_json)}
 
- 
-
           - instance_name: ${validation_info.instance_name}
-
- 
 
           - scan_result: ${validation_info.scan_result}
 
@@ -1982,11 +1818,7 @@ validate_image_ephemeral:
 
         return:
 
- 
-
           validation_instance: ${instance_name}
-
- 
 
           scan_result: ${scan_result}
 
